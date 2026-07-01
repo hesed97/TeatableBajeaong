@@ -197,6 +197,7 @@
       // --- Data State ---
       const [startDate, setStartDate] = useState(DEMO_START_DATE);
       const [endDate, setEndDate] = useState(DEMO_END_DATE);
+      const [globalExcludedSlots, setGlobalExcludedSlots] = useState([]); // 전체 운영 제외 시간
       const [members, setMembers] = useState(DEMO_MEMBERS);
       const [schedule, setSchedule] = useState(null);
       const [personsPerShift, setPersonsPerShift] = useState(2);
@@ -289,6 +290,7 @@
               const newDataString = JSON.stringify({
                 startDate: data.startDate,
                 endDate: data.endDate,
+                globalExcludedSlots: data.globalExcludedSlots,
                 members: data.members,
                 schedule: data.schedule,
                 personsPerShift: data.personsPerShift
@@ -302,6 +304,7 @@
 
               setStartDate(data.startDate || DEMO_START_DATE);
               setEndDate(data.endDate || DEMO_END_DATE);
+              setGlobalExcludedSlots(data.globalExcludedSlots ? JSON.parse(data.globalExcludedSlots) : []);
               setMembers(data.members ? JSON.parse(data.members) : DEMO_MEMBERS);
               setSchedule(data.schedule ? JSON.parse(data.schedule) : null);
               setPersonsPerShift(data.personsPerShift || 2);
@@ -317,6 +320,7 @@
               if (data) {
                 setStartDate(data.startDate || DEMO_START_DATE);
                 setEndDate(data.endDate || DEMO_END_DATE);
+                setGlobalExcludedSlots(data.globalExcludedSlots || []);
                 setMembers(data.members || DEMO_MEMBERS);
                 setSchedule(data.schedule || null);
                 setPersonsPerShift(data.personsPerShift || 2);
@@ -330,6 +334,7 @@
             if (data) {
               setStartDate(data.startDate || DEMO_START_DATE);
               setEndDate(data.endDate || DEMO_END_DATE);
+              setGlobalExcludedSlots(data.globalExcludedSlots || []);
               setMembers(data.members || DEMO_MEMBERS);
               setSchedule(data.schedule || null);
               setPersonsPerShift(data.personsPerShift || 2);
@@ -347,6 +352,7 @@
         const currentLocalDataString = JSON.stringify({
           startDate: startDate, 
           endDate: endDate,
+          globalExcludedSlots: JSON.stringify(globalExcludedSlots),
           members: JSON.stringify(members),
           schedule: schedule ? JSON.stringify(schedule) : null,
           personsPerShift: personsPerShift
@@ -370,6 +376,7 @@
               cloudDataStringRef.current = currentLocalDataString; // 저장 전 미리 업데이트하여 메아리 무시
               await setDoc(docRef, {
                 startDate, endDate,
+                globalExcludedSlots: JSON.stringify(globalExcludedSlots),
                 members: JSON.stringify(members),
                 schedule: schedule ? JSON.stringify(schedule) : null,
                 personsPerShift,
@@ -379,11 +386,11 @@
               console.error("Cloud save error:", err);
             }
           } 
-          await saveLocalState({ startDate, endDate, members, schedule, personsPerShift });
+          await saveLocalState({ startDate, endDate, globalExcludedSlots, members, schedule, personsPerShift });
           
         }, 1000);
         return () => clearTimeout(timeoutId);
-      }, [isDataLoaded, startDate, endDate, members, schedule, personsPerShift, user, usingCloud]);
+      }, [isDataLoaded, startDate, endDate, globalExcludedSlots, members, schedule, personsPerShift, user, usingCloud]);
 
       const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
@@ -405,6 +412,15 @@
       };
 
       // --- Form Handlers ---
+      const toggleGlobalExcludedSlot = (date, time) => {
+        const exists = globalExcludedSlots.some(s => s.date === date && s.time === time);
+        if (exists) {
+          setGlobalExcludedSlots(globalExcludedSlots.filter(s => !(s.date === date && s.time === time)));
+        } else {
+          setGlobalExcludedSlots([...globalExcludedSlots, { date, time }]);
+        }
+      };
+
       const toggleExcludedSlot = (date, time) => {
         const exists = excludedSlots.some(s => s.date === date && s.time === time);
         if (exists) {
@@ -476,12 +492,13 @@
       const loadSampleData = () => {
         setStartDate(DEMO_START_DATE);
         setEndDate(DEMO_END_DATE);
+        setGlobalExcludedSlots([]);
         setMembers(DEMO_MEMBERS);
         setSchedule(null);
         showToast('샘플 데이터가 로드되었습니다.');
       };
 
-      // --- 스마트 스케줄 생성 (연속 방지, 학년 밸런스) ---
+      // --- 스마트 스케줄 생성 (연속 방지, 학년 밸런스, 전체 제외 시간 반영) ---
       const generateSchedule = () => {
         if (dates.length === 0 || members.length === 0) return showToast('일정 설정 및 멤버 추가를 확인해주세요.', 'error');
 
@@ -493,6 +510,12 @@
         dates.forEach(date => {
           newSchedule[date] = { '아침': [], '점심': [], '저녁': [] };
           TIMES.forEach(time => {
+            // [추가됨] 전체 운영 제외 시간인 경우 배정 생략
+            const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+            if (isGloballyExcluded) {
+              return; // 이 타임은 아무도 배정하지 않음
+            }
+
             let availableMembers = members.filter(m => isAvailable(m, date, time));
             let selectedForThisSlot = [];
 
@@ -574,6 +597,13 @@
         
         if (srcDate === targetDate && srcTime === targetTime) return;
 
+        // [추가됨] 전체 운영 제외 시간이면 드롭 불가
+        const isGloballyExcluded = globalExcludedSlots.some(s => s.date === targetDate && s.time === targetTime);
+        if (isGloballyExcluded) {
+          showToast('해당 시간은 티테이블을 운영하지 않습니다.', 'error');
+          return;
+        }
+
         if (!isAvailable(member, targetDate, targetTime)) {
           showToast(`[${member.name}]님은 해당 시간에 참여할 수 없습니다.`, 'error');
           return;
@@ -597,9 +627,14 @@
         dates.forEach(date => {
           text += `🔹 ${formatDateShort(date)}\n`;
           TIMES.forEach(time => {
-            const assignedIds = schedule[date][time] || [];
-            const assignedNames = assignedIds.map(m => `${m.name}(${m.grade})`).join(', ');
-            text += `  - ${time}: ${assignedNames || '배정 인원 없음'}\n`;
+            const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+            if (isGloballyExcluded) {
+              text += `  - ${time}: [운영 안 함]\n`;
+            } else {
+              const assignedIds = schedule[date][time] || [];
+              const assignedNames = assignedIds.map(m => `${m.name}(${m.grade})`).join(', ');
+              text += `  - ${time}: ${assignedNames || '배정 인원 없음'}\n`;
+            }
           });
           text += "\n";
         });
@@ -614,15 +649,34 @@
 
       const handleDownloadImage = () => {
         if (!scheduleRef.current) return showToast('다운로드할 일정표가 없습니다.', 'error');
-        showToast('이미지를 생성 중입니다...');
+        showToast('일정표 이미지를 고화질로 렌더링 중입니다...');
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
         script.onload = () => {
-          window.html2canvas(scheduleRef.current, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
+          window.html2canvas(scheduleRef.current, { 
+            scale: 2, // 고화질 렌더링
+            backgroundColor: '#ffffff',
+            onclone: (clonedDoc) => {
+              // 캡처 전용 헤더/푸터 활성화
+              const title = clonedDoc.getElementById('capture-title');
+              if (title) title.style.display = 'block';
+              const footer = clonedDoc.getElementById('capture-footer');
+              if (footer) footer.style.display = 'block';
+              
+              // 캡처 시 불필요한 요소 확실히 숨김 처리 (수동 배정 버튼 등)
+              const ignoreElements = clonedDoc.querySelectorAll('[data-html2canvas-ignore="true"]');
+              ignoreElements.forEach(el => el.style.display = 'none');
+            }
+          }).then(canvas => {
             const link = document.createElement('a');
-            link.download = '수련회_티테이블_일정표.png'; link.href = canvas.toDataURL('image/png'); link.click();
-            showToast('이미지 저장이 완료되었습니다! 🖼️');
-          }).catch(err => showToast('이미지 생성에 실패했습니다.', 'error'));
+            link.download = '수련회_티테이블_일정표.png'; 
+            link.href = canvas.toDataURL('image/png'); 
+            link.click();
+            showToast('깔끔한 이미지 저장이 완료되었습니다! 🖼️');
+          }).catch(err => {
+            console.error(err);
+            showToast('이미지 생성에 실패했습니다.', 'error');
+          });
         };
         document.body.appendChild(script);
       };
@@ -678,17 +732,63 @@
             {!isRegisterMode && (
               <section className="bg-transparent space-y-3">
                 <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700 ml-1">
-                  <span className="text-amber-600"><CalendarIcon /></span> 1. 수련회 기간 설정
+                  <span className="text-amber-600"><CalendarIcon /></span> 1. 수련회 기간 및 운영 설정
                 </h2>
-                <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 p-4 sm:p-5 bg-white border border-stone-200 rounded-2xl shadow-sm">
-                  <div className="flex-1">
-                    <label className="block text-xs font-semibold text-stone-500 mb-1.5">시작 날짜</label>
-                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[15px] sm:text-[16px] text-stone-700" />
+                <div className="p-4 sm:p-5 bg-white border border-stone-200 rounded-2xl shadow-sm">
+                  
+                  <div className="flex flex-col sm:flex-row gap-3 sm:gap-4 mb-2">
+                    <div className="flex-1">
+                      <label className="block text-xs font-semibold text-stone-500 mb-1.5">시작 날짜</label>
+                      <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[15px] sm:text-[16px] text-stone-700" />
+                    </div>
+                    <div className="flex-1">
+                      <label className="block text-xs font-semibold text-stone-500 mb-1.5">종료 날짜</label>
+                      <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[15px] sm:text-[16px] text-stone-700" />
+                    </div>
                   </div>
-                  <div className="flex-1">
-                    <label className="block text-xs font-semibold text-stone-500 mb-1.5">종료 날짜</label>
-                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[15px] sm:text-[16px] text-stone-700" />
-                  </div>
+
+                  {/* 전체 운영 제외 시간 설정 */}
+                  {dates.length > 0 && (
+                    <div className="mt-5 border border-stone-200 rounded-xl overflow-hidden">
+                      <div className="bg-stone-50 px-3 sm:px-4 py-2.5 sm:py-3 border-b border-stone-200 flex justify-between items-center">
+                        <span className="text-[12px] sm:text-[13px] font-bold text-stone-700">🚫 전체 운영 제외 시간 설정 (선택)</span>
+                        <span className="text-[10px] sm:text-[11px] text-stone-400">운영하지 않는 시간 터치</span>
+                      </div>
+                      <div 
+                        className="p-2 sm:p-3 bg-white grid gap-1.5 sm:gap-2 overflow-x-auto text-sm text-center"
+                        style={{ gridTemplateColumns: `auto repeat(${dates.length}, minmax(4rem, 1fr))` }}
+                      >
+                        <div className="font-bold text-stone-400 text-[11px] sm:text-xs self-center">시간</div>
+                        {dates.map(date => (
+                          <div key={date} className="font-bold text-stone-600 text-[11px] sm:text-xs whitespace-nowrap">
+                            {formatDateShort(date)}
+                          </div>
+                        ))}
+                        
+                        {TIMES.map(time => (
+                          <React.Fragment key={`global-${time}`}>
+                            <div className="self-center font-semibold text-stone-600 text-[11px] sm:text-xs whitespace-nowrap">{time}</div>
+                            {dates.map(date => {
+                              const isExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+                              return (
+                                <button 
+                                  key={`global-${date}-${time}`} type="button"
+                                  onClick={() => toggleGlobalExcludedSlot(date, time)}
+                                  className={`py-1.5 sm:py-2 rounded-lg border text-[11px] sm:text-xs font-bold transition-all ${
+                                    isExcluded ? 'bg-stone-200 border-stone-300 text-stone-500 shadow-inner' 
+                                    : 'bg-emerald-50 border-emerald-200 text-emerald-600 hover:bg-emerald-100'
+                                  }`}
+                                >
+                                  {isExcluded ? '운영 안 함' : '정상 운영'}
+                                </button>
+                              );
+                            })}
+                          </React.Fragment>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
                 </div>
               </section>
             )}
@@ -743,10 +843,10 @@
                   </div>
                 )}
 
-                {/* 예외 시간 선택 (특정 시간 근무 불가) */}
+                {/* 개인 예외 시간 선택 (특정 시간 근무 불가) */}
                 <div className="border border-stone-200 rounded-xl overflow-hidden">
                   <div className="bg-stone-50 px-3 sm:px-4 py-2.5 sm:py-3 border-b border-stone-200 flex justify-between items-center">
-                    <span className="text-[12px] sm:text-[13px] font-bold text-stone-700">🚫 특정 예외 시간 설정 (선택)</span>
+                    <span className="text-[12px] sm:text-[13px] font-bold text-stone-700">🚫 개인 예외 시간 설정 (선택)</span>
                     <span className="text-[10px] sm:text-[11px] text-stone-400">근무가 불가능한 칸 터치</span>
                   </div>
                   <div 
@@ -773,19 +873,21 @@
                           }
 
                           const isExcluded = excludedSlots.some(s => s.date === date && s.time === time);
+                          const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
                           
                           return (
                             <button 
                               key={`${date}-${time}`} type="button"
-                              disabled={!inRange}
+                              disabled={!inRange || isGloballyExcluded}
                               onClick={() => toggleExcludedSlot(date, time)}
                               className={`py-1.5 sm:py-2 rounded-lg border text-[11px] sm:text-xs font-bold transition-all ${
-                                !inRange ? 'bg-stone-100 border-stone-200 text-stone-300 cursor-not-allowed' 
+                                isGloballyExcluded ? 'bg-stone-200 border-stone-300 text-stone-400 cursor-not-allowed opacity-50'
+                                : !inRange ? 'bg-stone-100 border-stone-200 text-stone-300 cursor-not-allowed' 
                                 : isExcluded ? 'bg-rose-100 border-rose-300 text-rose-700 shadow-inner' 
                                 : 'bg-stone-50 border-stone-200 text-stone-400 hover:bg-stone-100'
                               }`}
                             >
-                              {!inRange ? '-' : isExcluded ? '불가' : '가능'}
+                              {isGloballyExcluded ? '전체 휴무' : !inRange ? '-' : isExcluded ? '불가' : '가능'}
                             </button>
                           );
                         })}
@@ -899,78 +1001,107 @@
                   )}
 
                   {schedule ? (
-                    <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-                      <table ref={scheduleRef} className="w-full text-sm min-w-[700px] border-collapse bg-white">
-                        <thead>
-                          <tr>
-                            <th className="bg-[#F4ECE4] border-b border-r border-stone-200 p-4 text-center w-28 font-bold text-stone-700 whitespace-nowrap">시간 \ 날짜</th>
-                            {dates.map(date => (
-                              <th key={date} className="bg-[#F4ECE4] border-b border-stone-200 p-4 text-center font-bold text-stone-800 min-w-[150px]">{formatDateShort(date)}</th>
-                            ))}
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {TIMES.map((time, tIdx) => {
-                            const isLastRow = tIdx === TIMES.length - 1;
-                            return (
-                              <tr key={time} className="hover:bg-amber-50/20 transition-colors">
-                                <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
-                                
-                                {dates.map(date => {
-                                  const assigned = schedule[date][time];
-                                  const slotId = `${date}-${time}`;
-                                  const isDragOver = dragOverSlot === slotId;
+                    <div className="overflow-x-auto bg-stone-50/50" style={{ WebkitOverflowScrolling: 'touch' }}>
+                      {/* 이미지 캡처의 기준이 되는 최상위 컨테이너 (넉넉한 패딩 유지) */}
+                      <div ref={scheduleRef} className="bg-white p-4 sm:p-8 min-w-[700px] w-max mx-auto">
+                        
+                        {/* --- 이미지 캡처 시에만 나타나는 전용 타이틀 영역 --- */}
+                        <div id="capture-title" style={{ display: 'none' }} className="mb-6 pb-4 border-b-2 border-stone-200 text-center">
+                          <h2 className="text-[24px] sm:text-[28px] font-extrabold text-stone-800 tracking-tight flex items-center justify-center gap-2">
+                            <CoffeeIcon /> 수련회 티테이블 운영 일정표
+                          </h2>
+                          <p className="text-stone-500 font-semibold mt-2">{formatDateShort(startDate)} ~ {formatDateShort(endDate)}</p>
+                        </div>
+
+                        <table className="w-full text-sm border-collapse bg-white">
+                          <thead>
+                            <tr>
+                              <th className="bg-[#F4ECE4] border-b border-r border-stone-200 p-4 text-center w-28 font-bold text-stone-700 whitespace-nowrap">시간 \ 날짜</th>
+                              {dates.map(date => (
+                                <th key={date} className="bg-[#F4ECE4] border-b border-stone-200 p-4 text-center font-bold text-stone-800 min-w-[150px]">{formatDateShort(date)}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {TIMES.map((time, tIdx) => {
+                              const isLastRow = tIdx === TIMES.length - 1;
+                              return (
+                                <tr key={time} className="hover:bg-amber-50/20 transition-colors">
+                                  <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
                                   
-                                  return (
-                                    <td 
-                                      key={slotId} 
-                                      onDragOver={(e) => handleDragOver(e, date, time)}
-                                      onDragLeave={handleDragLeave}
-                                      onDrop={(e) => handleDrop(e, date, time)}
-                                      className={`p-3 align-top transition-colors ${!isLastRow ? 'border-b border-stone-200' : ''} ${isDragOver ? 'drag-over' : ''}`}
-                                    >
-                                      <div className="min-h-[80px] flex flex-col items-center gap-2 w-full h-full">
-                                        <div className="flex flex-wrap justify-center gap-2 w-full">
-                                          {assigned.map(m => {
-                                            const isHighlighted = highlightId === m.id;
-                                            return (
-                                              <div 
-                                                key={m.id} 
-                                                draggable={true}
-                                                onDragStart={(e) => handleDragStart(e, date, time, m)}
-                                                onDragEnd={handleDragEnd}
-                                                className={`draggable-item relative flex flex-col items-center justify-center py-2 px-3 min-w-[4rem] shadow-sm transition-all select-none cursor-grab active:cursor-grabbing hover:shadow-md
-                                                  ${isHighlighted ? 'bg-amber-100 border-2 border-amber-500 ring-2 ring-amber-300 ring-opacity-50 transform scale-110 z-10' : 'bg-white border border-stone-200 rounded-lg'}
-                                                  ${isHighlighted ? 'rounded-xl' : 'rounded-lg'}
-                                                `}
-                                                style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
-                                              >
-                                                <span className={`text-[13px] font-bold ${isHighlighted ? 'text-amber-900' : 'text-stone-800'}`}>{m.name}</span>
-                                                <span className={`text-[10px] mt-0.5 ${isHighlighted ? 'text-amber-700' : 'text-stone-400'}`}>{m.grade}</span>
-                                              </div>
-                                            );
-                                          })}
-                                        </div>
-                                        
-                                        {assigned.length < personsPerShift && <span className="text-[11px] font-bold text-rose-400 mt-auto">(필요: {personsPerShift}명)</span>}
-                                        {assigned.length === 0 && <span className="text-center text-stone-300 text-xs font-semibold mt-auto mb-auto">비어있음</span>}
-                                      </div>
-                                      
-                                      <button 
-                                        onClick={() => setManualEditSlot({date, time})} 
-                                        data-html2canvas-ignore="true" 
-                                        className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 bg-[#FAF7F2] hover:bg-amber-100 text-stone-400 hover:text-amber-700 rounded-lg text-[11px] font-bold transition-colors active:scale-95"
+                                  {dates.map(date => {
+                                    const assigned = schedule[date][time];
+                                    const slotId = `${date}-${time}`;
+                                    const isDragOver = dragOverSlot === slotId;
+                                    
+                                    // [추가됨] 해당 타임이 전체 운영 제외인지 확인
+                                    const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+                                    
+                                    return (
+                                      <td 
+                                        key={slotId} 
+                                        onDragOver={(e) => handleDragOver(e, date, time)}
+                                        onDragLeave={handleDragLeave}
+                                        onDrop={(e) => handleDrop(e, date, time)}
+                                        className={`p-3 align-top transition-colors ${!isLastRow ? 'border-b border-stone-200' : ''} ${isDragOver ? 'drag-over' : ''} ${isGloballyExcluded ? 'bg-stone-50' : ''}`}
                                       >
-                                        <PencilIcon /> 수동 배정
-                                      </button>
-                                    </td>
-                                  );
-                                })}
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
+                                        {isGloballyExcluded ? (
+                                          <div className="min-h-[80px] flex items-center justify-center w-full h-full">
+                                            <span className="text-stone-400 text-[11px] sm:text-xs font-bold bg-stone-200 px-3 py-1.5 rounded-lg border border-stone-300">운영 안 함</span>
+                                          </div>
+                                        ) : (
+                                          <>
+                                            <div className="min-h-[80px] flex flex-col items-center gap-2 w-full h-full">
+                                              <div className="flex flex-wrap justify-center gap-2 w-full">
+                                                {assigned.map(m => {
+                                                  const isHighlighted = highlightId === m.id;
+                                                  return (
+                                                    <div 
+                                                      key={m.id} 
+                                                      draggable={true}
+                                                      onDragStart={(e) => handleDragStart(e, date, time, m)}
+                                                      onDragEnd={handleDragEnd}
+                                                      className={`draggable-item relative flex flex-col items-center justify-center py-2 px-3 min-w-[4rem] shadow-sm transition-all select-none cursor-grab active:cursor-grabbing hover:shadow-md
+                                                        ${isHighlighted ? 'bg-amber-100 border-2 border-amber-500 ring-2 ring-amber-300 ring-opacity-50 transform scale-110 z-10' : 'bg-white border border-stone-200 rounded-lg'}
+                                                        ${isHighlighted ? 'rounded-xl' : 'rounded-lg'}
+                                                      `}
+                                                      style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+                                                    >
+                                                      <span className={`text-[13px] font-bold ${isHighlighted ? 'text-amber-900' : 'text-stone-800'}`}>{m.name}</span>
+                                                      <span className={`text-[10px] mt-0.5 ${isHighlighted ? 'text-amber-700' : 'text-stone-400'}`}>{m.grade}</span>
+                                                    </div>
+                                                  );
+                                                })}
+                                              </div>
+                                              
+                                              {assigned.length < personsPerShift && <span className="text-[11px] font-bold text-rose-400 mt-auto">(필요: {personsPerShift}명)</span>}
+                                              {assigned.length === 0 && <span className="text-center text-stone-300 text-xs font-semibold mt-auto mb-auto">비어있음</span>}
+                                            </div>
+                                            
+                                            <button 
+                                              onClick={() => setManualEditSlot({date, time})} 
+                                              data-html2canvas-ignore="true" 
+                                              className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 bg-[#FAF7F2] hover:bg-amber-100 text-stone-400 hover:text-amber-700 rounded-lg text-[11px] font-bold transition-colors active:scale-95"
+                                            >
+                                              <PencilIcon /> 수동 배정
+                                            </button>
+                                          </>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+
+                        {/* --- 이미지 캡처 시에만 나타나는 전용 푸터 --- */}
+                        <div id="capture-footer" style={{ display: 'none' }} className="mt-4 text-right text-stone-400 text-[11px] font-medium tracking-wide">
+                          생성 일시: {new Date().toLocaleString('ko-KR')}
+                        </div>
+
+                      </div>
                     </div>
                   ) : (
                     <div className="text-center py-16 bg-[#FCFBF8]">
