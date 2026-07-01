@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-  <title>티테이블 일정 배정 시스템</title>
+  <title>티테이블 일정 배정 시스템 (Pro)</title>
   
   <!-- Tailwind CSS -->
   <script src="https://cdn.tailwindcss.com"></script>
@@ -15,8 +15,37 @@
   <!-- Babel -->
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
+  <!-- 모바일 터치 드래그 폴리필 -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/default.css">
+  <script src="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/index.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mobile-drag-drop@2.3.0-rc.2/scroll-behaviour-polyfill.min.js"></script>
+  <script>
+    window.addEventListener('DOMContentLoaded', function() {
+      MobileDragDrop.polyfill({
+        dragImageTranslateOverride: MobileDragDrop.scrollBehaviourDragImageTranslateOverride,
+        holdToDrag: 300 // 0.3초 꾹 누르면 드래그 시작 (가로 스크롤 방해 방지)
+      });
+      window.addEventListener('touchmove', function() {}, {passive: false});
+    });
+  </script>
+
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    /* 커스텀 스크롤바 */
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: #E7E5E4; border-radius: 10px; }
+    ::-webkit-scrollbar-thumb:hover { background: #D6D3D1; }
+    
+    /* 드래그 앤 드롭 효과 */
+    .drag-over { background-color: #FEF3C7 !important; border: 2px dashed #F59E0B !important; }
+
+    /* 모바일 드래그 시 텍스트 선택 및 iOS 메뉴 팝업 방지 */
+    .draggable-item {
+      -webkit-touch-callout: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body>
@@ -29,11 +58,7 @@
 
     const { useState, useMemo, useEffect, useRef } = React;
 
-    // =====================================================================
-    // [중요] 깃허브 페이지에서 다른 사람과 데이터를 실시간으로 공유하시려면
-    // 본인의 Firebase(무료) 프로젝트를 생성한 후 아래 설정값을 채워주세요.
-    // 비워두시면(null) 기존처럼 개인 기기에만 저장되는 로컬 모드로 작동합니다.
-    // =====================================================================
+    // 본인의 Firebase 설정 (깃허브 배포 시 이 설정이 사용됨)
     const MY_FIREBASE_CONFIG = {
       apiKey: "AIzaSyBhxBXcMtGh8jiOjylgf529IAd3a-Otk1o",
       authDomain: "teatable-c350b.firebaseapp.com",
@@ -53,18 +78,19 @@
     const CopyIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect width="14" height="14" x="8" y="8" rx="2" ry="2"/><path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/></svg>;
     const DownloadIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/></svg>;
     const XIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>;
+    const BarChartIcon = () => <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" x2="12" y1="20" y2="10"/><line x1="18" x2="18" y1="20" y2="4"/><line x1="6" x2="6" y1="20" y2="16"/></svg>;
 
     // --- 파이어베이스 클라우드 초기화 ---
     let app, auth, db, appId;
     try {
       const injectedConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
-      const finalConfig = MY_FIREBASE_CONFIG || injectedConfig;
+      // 캔버스 환경에서는 주입된 설정을, 깃허브 등 외부 호스팅 시에는 사용자 설정(MY_FIREBASE_CONFIG)을 사용합니다.
+      const finalConfig = injectedConfig || MY_FIREBASE_CONFIG;
       
       if (finalConfig && Object.keys(finalConfig).length > 0) {
         app = initializeApp(finalConfig);
         auth = getAuth(app);
         db = getFirestore(app);
-        // 앱 ID를 식별하기 위해 깃허브 등 외부 호스팅 시 임의의 고유 ID 부여
         appId = typeof __app_id !== 'undefined' ? __app_id : 'github-tea-table-app';
       }
     } catch (e) {
@@ -113,12 +139,14 @@
     const DEMO_START_DATE = '2026-07-20';
     const DEMO_END_DATE = '2026-07-22';
     const DEMO_MEMBERS = [
-      { id: 'sample_1', name: '김은혜', grade: '1학년', type: 'FULL', startDate: null, startTime: null, endDate: null, endTime: null },
-      { id: 'sample_2', name: '이민준', grade: '2학년', type: 'FULL', startDate: null, startTime: null, endDate: null, endTime: null },
-      { id: 'sample_3', name: '박서연', grade: '1학년', type: 'PARTIAL', startDate: '2026-07-20', startTime: '점심', endDate: '2026-07-21', endTime: '저녁' },
-      { id: 'sample_4', name: '정우진', grade: '기타', type: 'FULL', startDate: null, startTime: null, endDate: null, endTime: null },
-      { id: 'sample_5', name: '최지우', grade: '기타', type: 'PARTIAL', startDate: '2026-07-21', startTime: '아침', endDate: '2026-07-22', endTime: '점심' },
-      { id: 'sample_6', name: '강동현', grade: '2학년', type: 'FULL', startDate: null, startTime: null, endDate: null, endTime: null }
+      { id: 'sample_1', name: '김은혜', grade: '1학년', type: 'FULL', excludedSlots: [] },
+      { id: 'sample_2', name: '이민준', grade: '2학년', type: 'FULL', excludedSlots: [{date: '2026-07-21', time: '저녁'}] },
+      { id: 'sample_3', name: '박서연', grade: '1학년', type: 'PARTIAL', startDate: '2026-07-20', startTime: '점심', endDate: '2026-07-21', endTime: '저녁', excludedSlots: [] },
+      { id: 'sample_4', name: '정우진', grade: '기타', type: 'FULL', excludedSlots: [] },
+      { id: 'sample_5', name: '최지우', grade: '기타', type: 'PARTIAL', startDate: '2026-07-21', startTime: '아침', endDate: '2026-07-22', endTime: '점심', excludedSlots: [] },
+      { id: 'sample_6', name: '강동현', grade: '2학년', type: 'FULL', excludedSlots: [] },
+      { id: 'sample_7', name: '송지효', grade: '1학년', type: 'FULL', excludedSlots: [] },
+      { id: 'sample_8', name: '유재석', grade: '기타', type: 'FULL', excludedSlots: [] }
     ];
 
     const getDates = (startDate, endDate) => {
@@ -135,28 +163,42 @@
       if (!dateString) return '';
       const date = new Date(dateString);
       const days = ['일', '월', '화', '수', '목', '금', '토'];
-      return `${date.getMonth() + 1}월 ${date.getDate()}일(${days[date.getDay()]})`;
+      return `${date.getMonth() + 1}/${date.getDate()}(${days[date.getDay()]})`;
     };
+    
+    // 가능 여부 판별
     const isAvailable = (member, date, time) => {
-      if (member.type === 'FULL') return true;
-      const currentScore = new Date(date).getTime() + TIME_VALUES[time];
-      const startScore = new Date(member.startDate).getTime() + TIME_VALUES[member.startTime];
-      const endScore = new Date(member.endDate).getTime() + TIME_VALUES[member.endTime];
-      return currentScore >= startScore && currentScore <= endScore;
+      if (member.excludedSlots && member.excludedSlots.some(s => s.date === date && s.time === time)) {
+        return false;
+      }
+      if (member.type === 'PARTIAL') {
+        const currentScore = new Date(date).getTime() + TIME_VALUES[time];
+        const startScore = new Date(member.startDate).getTime() + TIME_VALUES[member.startTime];
+        const endScore = new Date(member.endDate).getTime() + TIME_VALUES[member.endTime];
+        return currentScore >= startScore && currentScore <= endScore;
+      }
+      return true;
     };
 
     function App() {
       const [user, setUser] = useState(null);
       const [isDataLoaded, setIsDataLoaded] = useState(false);
       const [usingCloud, setUsingCloud] = useState(false);
+      const [cloudError, setCloudError] = useState(false);
       const scheduleRef = useRef(null);
       const [toast, setToast] = useState(null);
 
-      // 폼 상태
+      // --- 참가자 등록 모드 상태 ---
+      const [isRegisterMode, setIsRegisterMode] = useState(false);
+
+      // --- Data State ---
       const [startDate, setStartDate] = useState(DEMO_START_DATE);
       const [endDate, setEndDate] = useState(DEMO_END_DATE);
       const [members, setMembers] = useState(DEMO_MEMBERS);
+      const [schedule, setSchedule] = useState(null);
+      const [personsPerShift, setPersonsPerShift] = useState(2);
       
+      // --- Form State ---
       const [name, setName] = useState('');
       const [grade, setGrade] = useState('1학년');
       const [partType, setPartType] = useState('FULL');
@@ -164,32 +206,64 @@
       const [partStartTime, setPartStartTime] = useState('아침');
       const [partEndDate, setPartEndDate] = useState('');
       const [partEndTime, setPartEndTime] = useState('점심');
+      const [excludedSlots, setExcludedSlots] = useState([]); // [{date, time}]
 
       const [editingId, setEditingId] = useState(null);
       const [manualEditSlot, setManualEditSlot] = useState(null);
       const [showConfirmClear, setShowConfirmClear] = useState(false);
-      const [personsPerShift, setPersonsPerShift] = useState(2);
-      const [schedule, setSchedule] = useState(null);
+      const [exceptionModalMember, setExceptionModalMember] = useState(null);
+      
+      // --- 하이라이트 및 드래그 상태 ---
+      const [highlightId, setHighlightId] = useState(null);
+      const [draggedInfo, setDraggedInfo] = useState(null);
+      const [dragOverSlot, setDragOverSlot] = useState(null);
 
-      // --- 1. 인증 프로세스 (클라우드 활성화 시) ---
+      const dates = useMemo(() => {
+        if (!startDate || !endDate || new Date(startDate) > new Date(endDate)) return [];
+        const generatedDates = getDates(startDate, endDate);
+        if (!generatedDates.includes(partStartDate)) setPartStartDate(generatedDates[0] || '');
+        if (!generatedDates.includes(partEndDate)) setPartEndDate(generatedDates[generatedDates.length - 1] || '');
+        return generatedDates;
+      }, [startDate, endDate]);
+
+      // --- URL 파라미터 확인 (참가자 모드 판별) ---
+      useEffect(() => {
+        const params = new URLSearchParams(window.location.search);
+        if (params.get('mode') === 'register') {
+          setIsRegisterMode(true);
+        }
+      }, []);
+
+      const memberStats = useMemo(() => {
+        const stats = {};
+        members.forEach(m => stats[m.id] = 0);
+        if (schedule) {
+          Object.values(schedule).forEach(dayObj => {
+            Object.values(dayObj).forEach(assignedArray => {
+              assignedArray.forEach(m => {
+                if (stats[m.id] !== undefined) stats[m.id]++;
+              });
+            });
+          });
+        }
+        return stats;
+      }, [schedule, members]);
+
+      // --- 1. 인증 프로세스 (GitHub 배포 시 익명 로그인 작동) ---
       useEffect(() => {
         if (!auth) return;
         const initAuth = async () => {
           try {
-            // 사용자가 자신의 Firebase 설정을 가져왔을 때는 커스텀 토큰 미스매치가 날 수 있으므로
-            // 외부 환경에서도 정상 동작하도록 익명 로그인 적용을 시도합니다.
-            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token && !MY_FIREBASE_CONFIG) {
+            // 현재 환경이 캔버스 환경일 때만 커스텀 토큰을 사용합니다.
+            // 깃허브 배포 시에는 익명 로그인(signInAnonymously)을 자동으로 호출합니다.
+            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
             } else {
               await signInAnonymously(auth);
             }
           } catch (err) { 
-            console.error("Auth error, attempting fallback...", err); 
-            try {
-              await signInAnonymously(auth);
-            } catch (fallbackErr) {
-              console.error("Fallback auth error:", fallbackErr);
-            }
+            console.error("Auth error, fallback to anonymous", err); 
+            try { await signInAnonymously(auth); } catch(e) { console.error("Final Auth Failed", e); }
           }
         };
         initAuth();
@@ -197,7 +271,7 @@
         return () => unsubscribe();
       }, []);
 
-      // --- 2. 데이터 불러오기 (클라우드 공용 데이터 or 로컬) ---
+      // --- 2. 데이터 불러오기 ---
       useEffect(() => {
         if (db) {
           if (!user) return;
@@ -214,13 +288,25 @@
             }
             setIsDataLoaded(true);
             setUsingCloud(true);
+            setCloudError(false);
           }, (err) => {
-            console.error("Cloud load error", err);
-            setIsDataLoaded(true);
+            console.error("Cloud load error (Check Firebase Rules):", err);
+            setUsingCloud(false);
+            setCloudError(true);
+            // 클라우드 에러 시 로컬 데이터 로드
+            loadLocalState().then(data => {
+              if (data) {
+                setStartDate(data.startDate || DEMO_START_DATE);
+                setEndDate(data.endDate || DEMO_END_DATE);
+                setMembers(data.members || DEMO_MEMBERS);
+                setSchedule(data.schedule || null);
+                setPersonsPerShift(data.personsPerShift || 2);
+              }
+              setIsDataLoaded(true);
+            });
           });
           return () => unsubscribe();
         } else {
-          // 로컬 모드: 브라우저 내부 IndexedDB 사용
           loadLocalState().then(data => {
             if (data) {
               setStartDate(data.startDate || DEMO_START_DATE);
@@ -235,43 +321,65 @@
         }
       }, [user]);
 
-      // --- 3. 데이터 저장하기 (변경될 때마다 자동 저장) ---
+      // --- 3. 데이터 저장하기 ---
       useEffect(() => {
         if (!isDataLoaded) return;
-        
         const timeoutId = setTimeout(async () => {
-          if (db && user) {
-            const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'teaTableApp', 'sharedState');
-            await setDoc(docRef, {
-              startDate,
-              endDate,
-              members: JSON.stringify(members),
-              schedule: schedule ? JSON.stringify(schedule) : null,
-              personsPerShift,
-              lastUpdated: new Date().toISOString()
-            });
-          } else {
-            // 로컬에 저장
-            await saveLocalState({
-              startDate, endDate, members, schedule, personsPerShift
-            });
-          }
-        }, 1000); // 1초 디바운스
-        
+          if (db && user && usingCloud) {
+            try {
+              const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'teaTableApp', 'sharedState');
+              await setDoc(docRef, {
+                startDate, endDate,
+                members: JSON.stringify(members),
+                schedule: schedule ? JSON.stringify(schedule) : null,
+                personsPerShift,
+                lastUpdated: new Date().toISOString()
+              });
+            } catch (err) {
+              console.error("Cloud save error:", err);
+            }
+          } 
+          // 클라우드 여부와 상관없이 항상 로컬 백업
+          await saveLocalState({ startDate, endDate, members, schedule, personsPerShift });
+          
+        }, 1000);
         return () => clearTimeout(timeoutId);
-      }, [isDataLoaded, startDate, endDate, members, schedule, personsPerShift, user]);
-
-      const dates = useMemo(() => {
-        if (!startDate || !endDate || new Date(startDate) > new Date(endDate)) return [];
-        const generatedDates = getDates(startDate, endDate);
-        if (!generatedDates.includes(partStartDate)) setPartStartDate(generatedDates[0] || '');
-        if (!generatedDates.includes(partEndDate)) setPartEndDate(generatedDates[generatedDates.length - 1] || '');
-        return generatedDates;
-      }, [startDate, endDate]);
+      }, [isDataLoaded, startDate, endDate, members, schedule, personsPerShift, user, usingCloud]);
 
       const showToast = (msg, type = 'success') => {
         setToast({ msg, type });
         setTimeout(() => setToast(null), 3000);
+      };
+
+      // --- 초대 링크 복사 ---
+      const handleCopyInviteLink = () => {
+        // 현재 브라우저의 정확한 주소를 가져오도록 수정 (기존 파라미터 제외)
+        let baseUrl = window.location.href.split('?')[0];
+        
+        // 깃허브 호스팅 시 경로 끝에 /가 없어서 파라미터가 유실되는 이슈 방지
+        if (!baseUrl.endsWith('/') && !baseUrl.endsWith('.html')) {
+          baseUrl += '/';
+        }
+        
+        const url = baseUrl + '?mode=register';
+        
+        const textarea = document.createElement("textarea");
+        textarea.value = url;
+        document.body.appendChild(textarea);
+        textarea.select();
+        try { document.execCommand('copy'); showToast("참가자용 등록 링크가 복사되었습니다! 🔗"); } 
+        catch (err) { showToast("복사에 실패했습니다.", "error"); }
+        document.body.removeChild(textarea);
+      };
+
+      // --- Form Handlers ---
+      const toggleExcludedSlot = (date, time) => {
+        const exists = excludedSlots.some(s => s.date === date && s.time === time);
+        if (exists) {
+          setExcludedSlots(excludedSlots.filter(s => !(s.date === date && s.time === time)));
+        } else {
+          setExcludedSlots([...excludedSlots, { date, time }]);
+        }
       };
 
       const handleSubmit = (e) => {
@@ -283,7 +391,7 @@
           if (startScore > endScore) return showToast('참여 종료 일시가 시작 일시보다 빠를 수 없습니다.', 'error');
         }
         const isDuplicate = members.some(m => m.name === name.trim() && m.grade === grade.trim() && m.id !== editingId);
-        if (isDuplicate) return showToast('이미 동일한 이름과 소속을 가진 멤버가 있습니다.', 'error');
+        if (isDuplicate) return showToast('동일한 이름과 소속을 가진 멤버가 있습니다.', 'error');
 
         const memberData = {
           id: editingId || Date.now().toString(),
@@ -292,6 +400,7 @@
           startTime: partType === 'PARTIAL' ? partStartTime : null,
           endDate: partType === 'PARTIAL' ? partEndDate : null,
           endTime: partType === 'PARTIAL' ? partEndTime : null,
+          excludedSlots: excludedSlots
         };
 
         if (editingId) {
@@ -302,12 +411,17 @@
           setMembers([...members, memberData]);
           showToast('멤버가 추가되었습니다.');
         }
-        setName(''); setGrade('1학년'); setPartType('FULL');
+        resetForm();
+      };
+
+      const resetForm = () => {
+        setName(''); setGrade('1학년'); setPartType('FULL'); setExcludedSlots([]); setEditingId(null);
       };
 
       const startEdit = (member) => {
         setEditingId(member.id);
         setName(member.name); setGrade(member.grade); setPartType(member.type);
+        setExcludedSlots(member.excludedSlots || []);
         if (member.type === 'PARTIAL') {
           setPartStartDate(member.startDate || dates[0] || '');
           setPartStartTime(member.startTime || '아침');
@@ -317,56 +431,67 @@
         window.scrollTo({ top: 0, behavior: 'smooth' });
       };
 
-      const cancelEdit = () => {
-        setEditingId(null); setName(''); setGrade('1학년'); setPartType('FULL');
-      };
-
       const removeMember = (id) => {
         setMembers(members.filter(m => m.id !== id));
         showToast('멤버가 삭제되었습니다.', 'error');
       };
 
-      const clearAllMembers = () => {
-        setShowConfirmClear(true);
-      };
-
       const executeClearAllMembers = () => {
-        setMembers([]); 
-        setSchedule(null);
-        setShowConfirmClear(false);
+        setMembers([]); setSchedule(null); setShowConfirmClear(false);
         showToast('모든 멤버가 초기화되었습니다.', 'error');
       };
 
       const loadSampleData = () => {
-        setStartDate(DEMO_START_DATE); setEndDate(DEMO_END_DATE);
-        setMembers(DEMO_MEMBERS); setSchedule(null);
+        setStartDate(DEMO_START_DATE);
+        setEndDate(DEMO_END_DATE);
+        setMembers(DEMO_MEMBERS);
+        setSchedule(null);
         showToast('샘플 데이터가 로드되었습니다.');
       };
 
+      // --- 스마트 스케줄 생성 (연속 방지, 학년 밸런스) ---
       const generateSchedule = () => {
-        if (dates.length === 0) return showToast('수련회 일정을 먼저 올바르게 설정해주세요.', 'error');
-        if (members.length === 0) return showToast('배정할 멤버를 추가해주세요.', 'error');
+        if (dates.length === 0 || members.length === 0) return showToast('일정 설정 및 멤버 추가를 확인해주세요.', 'error');
 
         const newSchedule = {};
-        const shiftCount = {};
-        members.forEach(m => shiftCount[m.id] = 0);
+        const tempShiftCount = {};
+        members.forEach(m => tempShiftCount[m.id] = 0);
+        let lastAssignedIds = []; 
 
         dates.forEach(date => {
           newSchedule[date] = { '아침': [], '점심': [], '저녁': [] };
           TIMES.forEach(time => {
             let availableMembers = members.filter(m => isAvailable(m, date, time));
-            availableMembers.sort((a, b) => {
-              if (shiftCount[a.id] !== shiftCount[b.id]) return shiftCount[a.id] - shiftCount[b.id];
-              return Math.random() - 0.5;
-            });
-            const selected = availableMembers.slice(0, personsPerShift);
-            newSchedule[date][time] = selected;
-            selected.forEach(m => shiftCount[m.id]++);
+            let selectedForThisSlot = [];
+
+            for (let i = 0; i < personsPerShift; i++) {
+              if (availableMembers.length === 0) break; 
+
+              availableMembers.forEach(c => {
+                let score = 0;
+                score -= tempShiftCount[c.id] * 10000; 
+                if (lastAssignedIds.includes(c.id)) score -= 50000; 
+                const sameGradeCount = selectedForThisSlot.filter(s => s.grade === c.grade).length;
+                score -= sameGradeCount * 2000;
+                score += Math.random() * 100;
+                c._tempScore = score;
+              });
+
+              availableMembers.sort((a, b) => b._tempScore - a._tempScore);
+              const bestCandidate = availableMembers.shift(); 
+              
+              selectedForThisSlot.push(bestCandidate);
+              tempShiftCount[bestCandidate.id]++;
+            }
+
+            newSchedule[date][time] = selectedForThisSlot;
+            lastAssignedIds = selectedForThisSlot.map(m => m.id); 
           });
         });
 
         setSchedule(newSchedule);
-        showToast('일정표 배정이 완료되었으며 실시간으로 동기화됩니다! ☕️');
+        setHighlightId(null);
+        showToast('스마트 배정이 완료되었습니다! ☕️');
       };
 
       const toggleManualAssign = (date, time, memberId) => {
@@ -383,6 +508,57 @@
         });
       };
 
+      // --- Drag and Drop Handlers ---
+      const handleDragStart = (e, date, time, member) => {
+        setDraggedInfo({ date, time, member });
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData('text/plain', member.id);
+        setTimeout(() => { if(e.target) e.target.style.opacity = '0.5'; }, 0);
+      };
+
+      const handleDragEnd = (e) => {
+        if(e.target) e.target.style.opacity = '1';
+        setDraggedInfo(null);
+        setDragOverSlot(null);
+      };
+
+      const handleDragOver = (e, date, time) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "move";
+        if (dragOverSlot !== `${date}-${time}`) setDragOverSlot(`${date}-${time}`);
+      };
+
+      const handleDragLeave = () => {
+        setDragOverSlot(null);
+      };
+
+      const handleDrop = (e, targetDate, targetTime) => {
+        e.preventDefault();
+        setDragOverSlot(null);
+        if (!draggedInfo) return;
+        
+        const { date: srcDate, time: srcTime, member } = draggedInfo;
+        setDraggedInfo(null); // 버그 방지 초기화
+        
+        if (srcDate === targetDate && srcTime === targetTime) return;
+
+        if (!isAvailable(member, targetDate, targetTime)) {
+          showToast(`[${member.name}]님은 해당 시간에 참여할 수 없습니다.`, 'error');
+          return;
+        }
+
+        setSchedule(prev => {
+          const next = JSON.parse(JSON.stringify(prev)); 
+          next[srcDate][srcTime] = next[srcDate][srcTime].filter(m => m.id !== member.id);
+          if (!next[targetDate][targetTime].some(m => m.id === member.id)) {
+            next[targetDate][targetTime].push(member);
+          }
+          return next;
+        });
+        showToast('일정이 이동되었습니다.');
+      };
+
+      // --- 출력 핸들러 ---
       const handleCopyAsText = () => {
         if (!schedule) return showToast('복사할 일정표가 없습니다.', 'error');
         let text = "🗓️ [수련회 티테이블 운영 일정표] 🗓️\n\n";
@@ -399,27 +575,22 @@
         textarea.value = text;
         document.body.appendChild(textarea);
         textarea.select();
-        try {
-          document.execCommand('copy');
-          showToast("클립보드에 일정표가 복사되었습니다! 📋");
-        } catch (err) { showToast("복사에 실패했습니다.", "error"); }
+        try { document.execCommand('copy'); showToast("클립보드에 복사되었습니다! 📋"); } 
+        catch (err) { showToast("복사에 실패했습니다.", "error"); }
         document.body.removeChild(textarea);
       };
 
       const handleDownloadImage = () => {
         if (!scheduleRef.current) return showToast('다운로드할 일정표가 없습니다.', 'error');
-        showToast('일정표 이미지를 생성 중입니다...');
+        showToast('이미지를 생성 중입니다...');
         const script = document.createElement('script');
         script.src = 'https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js';
         script.onload = () => {
-          window.html2canvas(scheduleRef.current, { scale: 2, backgroundColor: '#ffffff', useCORS: true }).then(canvas => {
-            const image = canvas.toDataURL('image/png');
+          window.html2canvas(scheduleRef.current, { scale: 2, backgroundColor: '#ffffff' }).then(canvas => {
             const link = document.createElement('a');
-            link.download = '수련회_티테이블_일정표.png'; link.href = image; link.click();
-            showToast('이미지 다운로드가 완료되었습니다! 🖼️');
-          }).catch(err => {
-            showToast('이미지 생성에 실패했습니다.', 'error');
-          });
+            link.download = '수련회_티테이블_일정표.png'; link.href = canvas.toDataURL('image/png'); link.click();
+            showToast('이미지 저장이 완료되었습니다! 🖼️');
+          }).catch(err => showToast('이미지 생성에 실패했습니다.', 'error'));
         };
         document.body.appendChild(script);
       };
@@ -434,72 +605,85 @@
       }
 
       return (
-        <div className="min-h-screen bg-[#FDF8F5] p-3 sm:p-4 md:p-8 font-sans text-stone-800" style={{ WebkitTapHighlightColor: 'transparent', paddingBottom: 'calc(6rem + env(safe-area-inset-bottom))' }}>
+        <div className="min-h-screen bg-[#FDF8F5] p-3 sm:p-4 md:p-8 font-sans text-stone-800" style={{ paddingBottom: 'calc(6rem + env(safe-area-inset-bottom))' }}>
           
           {toast && (
-            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-50 px-6 py-3 rounded-full shadow-md text-sm font-semibold text-white transition-opacity duration-300 ${toast.type === 'error' ? 'bg-rose-500' : 'bg-amber-600'}`}>
+            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-[100] px-6 py-3 rounded-full shadow-md text-sm font-semibold text-white transition-opacity duration-300 ${toast.type === 'error' ? 'bg-rose-500' : 'bg-amber-600'}`}>
               {toast.msg}
             </div>
           )}
 
-          <div className="max-w-4xl mx-auto space-y-8">
+          <div className="max-w-5xl mx-auto space-y-8 relative">
             
             <header className="text-center pt-4 relative">
-              {usingCloud ? (
-                <div className="absolute top-0 right-0 bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> 실시간 공유됨
-                </div>
-              ) : (
-                 <div className="absolute top-0 right-0 bg-stone-200 text-stone-500 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1" title="깃허브 등 외부 호스팅 시 Firebase 설정이 필요합니다">
-                  <span className="w-1.5 h-1.5 rounded-full bg-stone-400"></span> 개인 로컬 저장
-                </div>
-              )}
-              <h1 className="text-3xl font-bold text-stone-800 flex items-center justify-center gap-3 mt-4">
+              <div className="absolute top-0 right-0 flex flex-col items-end gap-2">
+                {!isRegisterMode && (
+                  <button onClick={handleCopyInviteLink} className="bg-amber-100 text-amber-700 text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm hover:bg-amber-200 transition-colors active:scale-95">
+                    🔗 참가자 초대 링크 복사
+                  </button>
+                )}
+                {usingCloud ? (
+                  <div className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 shadow-sm">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> 실시간 공유됨
+                  </div>
+                ) : (
+                  <div className={`text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 shadow-sm ${cloudError ? 'bg-rose-100 text-rose-600' : 'bg-stone-200 text-stone-500'}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${cloudError ? 'bg-rose-500' : 'bg-stone-400'}`}></span> 
+                    {cloudError ? 'DB 연결 실패 (로컬 모드)' : '개인 로컬 모드'}
+                  </div>
+                )}
+              </div>
+
+              <h1 className="text-3xl font-bold text-stone-800 flex items-center justify-center gap-3 mt-10 sm:mt-4">
                 <span className="text-amber-700"><CoffeeIcon /></span>
-                티테이블 일정 배정 시스템
+                {isRegisterMode ? '티테이블 참가자 등록' : '티테이블 일정 배정 시스템'}
               </h1>
-              <p className="text-stone-500 mt-2 text-sm">따뜻한 티타임을 위해 참석자 일정에 맞춰 근무표를 구성해보세요.</p>
+              <p className="text-stone-500 mt-2 text-sm">
+                {isRegisterMode ? '본인의 이름과 학년, 참여 가능한 시간을 입력해 주세요.' : '따뜻한 티타임을 위해 참석자 일정에 맞춰 공평하게 근무표를 구성합니다.'}
+              </p>
             </header>
 
-            <section className="bg-transparent space-y-3">
-              <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700 ml-1">
-                <span className="text-amber-600"><CalendarIcon /></span>
-                1. 수련회 기간 설정
-              </h2>
-              <div className="flex flex-col sm:flex-row gap-4 p-5 bg-white border border-stone-200 rounded-2xl shadow-sm">
-                <div className="flex-1">
-                  <label className="block text-xs font-semibold text-stone-500 mb-1.5">시작 날짜</label>
-                  <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none transition text-[16px] text-stone-700" />
+            {!isRegisterMode && (
+              <section className="bg-transparent space-y-3">
+                <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700 ml-1">
+                  <span className="text-amber-600"><CalendarIcon /></span> 1. 수련회 기간 설정
+                </h2>
+                <div className="flex flex-col sm:flex-row gap-4 p-5 bg-white border border-stone-200 rounded-2xl shadow-sm">
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-stone-500 mb-1.5">시작 날짜</label>
+                    <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="w-full p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[16px] text-stone-700" />
+                  </div>
+                  <div className="flex-1">
+                    <label className="block text-xs font-semibold text-stone-500 mb-1.5">종료 날짜</label>
+                    <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none text-[16px] text-stone-700" />
+                  </div>
                 </div>
-                <div className="flex-1">
-                  <label className="block text-xs font-semibold text-stone-500 mb-1.5">종료 날짜</label>
-                  <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="w-full p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl focus:ring-2 focus:ring-amber-500 outline-none transition text-[16px] text-stone-700" />
-                </div>
-              </div>
-            </section>
+              </section>
+            )}
 
             <section className={`transition-opacity duration-300 space-y-3 ${dates.length === 0 ? 'opacity-50 pointer-events-none' : ''}`}>
               <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700 ml-1">
-                <span className="text-amber-600"><UsersIcon /></span>
-                2. 멤버 등록 및 관리
+                <span className="text-amber-600"><UsersIcon /></span> {isRegisterMode ? '내 정보 등록' : '2. 멤버 등록 및 관리'}
               </h2>
               
               <form onSubmit={handleSubmit} className="p-5 bg-white border border-stone-200 rounded-2xl shadow-sm space-y-5">
+                {/* 기본 정보 */}
                 <div className="flex flex-col sm:flex-row gap-3">
-                  <input type="text" placeholder="이름" value={name} onChange={e => setName(e.target.value)} className="flex-1 p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-[16px] text-stone-700" />
-                  <select value={grade} onChange={e => setGrade(e.target.value)} className="flex-1 p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-[16px] text-stone-700">
+                  <input type="text" placeholder="이름" value={name} onChange={e => setName(e.target.value)} className="flex-1 p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-[16px]" />
+                  <select value={grade} onChange={e => setGrade(e.target.value)} className="flex-1 p-3 sm:p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-[16px]">
                     {GRADES.map(g => <option key={g} value={g}>{g}</option>)}
                   </select>
                 </div>
 
+                {/* 참여 형태 */}
                 <div className="flex p-2 bg-[#FAF7F2] border border-stone-200 rounded-xl">
                   <label className="flex-1 flex items-center justify-center gap-2 cursor-pointer py-2 rounded-lg transition-colors active:bg-stone-200/50">
-                    <input type="radio" name="partType" value="FULL" checked={partType === 'FULL'} onChange={() => setPartType('FULL')} className="w-5 h-5 text-amber-600 focus:ring-amber-500 border-stone-300" />
+                    <input type="radio" name="partType" value="FULL" checked={partType === 'FULL'} onChange={() => setPartType('FULL')} className="w-5 h-5 text-amber-600 focus:ring-amber-500" />
                     <span className="text-[15px] font-bold text-stone-700">전참</span>
                   </label>
                   <div className="w-[1px] bg-stone-300 my-1 mx-1"></div>
                   <label className="flex-1 flex items-center justify-center gap-2 cursor-pointer py-2 rounded-lg transition-colors active:bg-stone-200/50">
-                    <input type="radio" name="partType" value="PARTIAL" checked={partType === 'PARTIAL'} onChange={() => setPartType('PARTIAL')} className="w-5 h-5 text-amber-600 focus:ring-amber-500 border-stone-300" />
+                    <input type="radio" name="partType" value="PARTIAL" checked={partType === 'PARTIAL'} onChange={() => setPartType('PARTIAL')} className="w-5 h-5 text-amber-600 focus:ring-amber-500" />
                     <span className="text-[15px] font-bold text-stone-700">부분참</span>
                   </label>
                 </div>
@@ -508,62 +692,124 @@
                   <div className="bg-amber-50/60 p-4 rounded-xl border border-amber-100 space-y-4">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <span className="w-12 font-bold text-amber-800 text-[15px]">시작</span>
-                      <select value={partStartDate} onChange={e => setPartStartDate(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white flex-1 outline-none text-[16px] focus:border-amber-400 text-stone-700">
+                      <select value={partStartDate} onChange={e => setPartStartDate(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white flex-1 outline-none text-[16px] text-stone-700">
                         {dates.map(d => <option key={d} value={d}>{formatDateShort(d)}</option>)}
                       </select>
-                      <select value={partStartTime} onChange={e => setPartStartTime(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white w-full sm:w-24 outline-none text-[16px] focus:border-amber-400 text-stone-700">
+                      <select value={partStartTime} onChange={e => setPartStartTime(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white w-full sm:w-24 outline-none text-[16px] text-stone-700">
                         {TIMES.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <span className="w-12 font-bold text-amber-800 text-[15px]">종료</span>
-                      <select value={partEndDate} onChange={e => setPartEndDate(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white flex-1 outline-none text-[16px] focus:border-amber-400 text-stone-700">
+                      <select value={partEndDate} onChange={e => setPartEndDate(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white flex-1 outline-none text-[16px] text-stone-700">
                         {dates.map(d => <option key={d} value={d}>{formatDateShort(d)}</option>)}
                       </select>
-                      <select value={partEndTime} onChange={e => setPartEndTime(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white w-full sm:w-24 outline-none text-[16px] focus:border-amber-400 text-stone-700">
+                      <select value={partEndTime} onChange={e => setPartEndTime(e.target.value)} className="p-3 sm:p-2 border border-amber-200 rounded-lg bg-white w-full sm:w-24 outline-none text-[16px] text-stone-700">
                         {TIMES.map(t => <option key={t} value={t}>{t}</option>)}
                       </select>
                     </div>
                   </div>
                 )}
 
+                {/* 예외 시간 선택 (특정 시간 근무 불가) */}
+                <div className="border border-stone-200 rounded-xl overflow-hidden">
+                  <div className="bg-stone-50 px-4 py-3 border-b border-stone-200 flex justify-between items-center">
+                    <span className="text-[13px] font-bold text-stone-700">🚫 특정 예외 시간 설정 (선택)</span>
+                    <span className="text-[11px] text-stone-400">근무가 불가능한 칸을 터치하세요</span>
+                  </div>
+                  <div 
+                    className="p-3 bg-white grid gap-2 overflow-x-auto text-sm text-center"
+                    style={{ gridTemplateColumns: `auto repeat(${dates.length}, minmax(4rem, 1fr))` }}
+                  >
+                    <div className="font-bold text-stone-400 text-xs self-center">시간</div>
+                    {dates.map(date => (
+                      <div key={date} className="font-bold text-stone-600 text-xs whitespace-nowrap">
+                        {formatDateShort(date)}
+                      </div>
+                    ))}
+                    
+                    {TIMES.map(time => (
+                      <React.Fragment key={time}>
+                        <div className="self-center font-semibold text-stone-600 text-xs whitespace-nowrap">{time}</div>
+                        {dates.map(date => {
+                          let inRange = true;
+                          if (partType === 'PARTIAL') {
+                            const currentScore = new Date(date).getTime() + TIME_VALUES[time];
+                            const startScore = new Date(partStartDate || dates[0]).getTime() + TIME_VALUES[partStartTime];
+                            const endScore = new Date(partEndDate || dates[dates.length - 1]).getTime() + TIME_VALUES[partEndTime];
+                            inRange = currentScore >= startScore && currentScore <= endScore;
+                          }
+
+                          const isExcluded = excludedSlots.some(s => s.date === date && s.time === time);
+                          
+                          return (
+                            <button 
+                              key={`${date}-${time}`} type="button"
+                              disabled={!inRange}
+                              onClick={() => toggleExcludedSlot(date, time)}
+                              className={`py-2 rounded-lg border text-xs font-bold transition-all ${
+                                !inRange ? 'bg-stone-100 border-stone-200 text-stone-300 cursor-not-allowed' 
+                                : isExcluded ? 'bg-rose-100 border-rose-300 text-rose-700 shadow-inner' 
+                                : 'bg-stone-50 border-stone-200 text-stone-400 hover:bg-stone-100'
+                              }`}
+                            >
+                              {!inRange ? '-' : isExcluded ? '불가' : '가능'}
+                            </button>
+                          );
+                        })}
+                      </React.Fragment>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 폼 버튼 */}
                 {editingId ? (
                   <div className="flex gap-2 pt-2">
                     <button type="submit" className="flex-1 flex items-center justify-center gap-2 bg-amber-600 hover:bg-amber-700 text-white p-3 rounded-xl transition-colors font-bold text-sm">수정 완료</button>
-                    <button type="button" onClick={cancelEdit} className="flex items-center justify-center bg-stone-200 hover:bg-stone-300 text-stone-700 p-3 rounded-xl transition-colors font-bold px-6 text-sm">취소</button>
+                    <button type="button" onClick={resetForm} className="flex items-center justify-center bg-stone-200 hover:bg-stone-300 text-stone-700 p-3 rounded-xl transition-colors font-bold px-6 text-sm">취소</button>
                   </div>
                 ) : (
                   <button type="submit" className="w-full flex items-center justify-center gap-2 bg-[#8C7A6B] hover:bg-[#7A6A5C] text-white p-3 rounded-xl transition-colors font-bold text-sm shadow-sm mt-2">
-                    <PlusCircleIcon /> 멤버 추가
+                    <PlusCircleIcon /> {isRegisterMode ? '등록하기' : '멤버 추가'}
                   </button>
                 )}
               </form>
 
+              {/* 등록된 멤버 리스트 */}
               {members.length > 0 && (
                 <div className="p-5 bg-white border border-stone-200 rounded-2xl shadow-sm">
                   <div className="flex items-center justify-between mb-4 ml-1">
-                    <h3 className="text-sm font-bold text-stone-500">등록된 멤버 ({members.length}명)</h3>
-                    <div className="flex gap-2">
-                      <button type="button" onClick={loadSampleData} className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg hover:bg-amber-100 transition">샘플 로드</button>
-                      <button type="button" onClick={clearAllMembers} className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2.5 py-1.5 rounded-lg hover:bg-rose-100 transition">전체 초기화</button>
-                    </div>
+                    <h3 className="text-sm font-bold text-stone-500">현재 등록된 멤버 ({members.length}명)</h3>
+                    {!isRegisterMode && (
+                      <div className="flex gap-2">
+                        <button type="button" onClick={loadSampleData} className="text-[11px] font-bold text-amber-700 bg-amber-50 border border-amber-200 px-2.5 py-1.5 rounded-lg hover:bg-amber-100 transition">샘플 로드</button>
+                        <button type="button" onClick={() => setShowConfirmClear(true)} className="text-[11px] font-bold text-rose-600 bg-rose-50 border border-rose-100 px-2.5 py-1.5 rounded-lg hover:bg-rose-100 transition">전체 초기화</button>
+                      </div>
+                    )}
                   </div>
-                  <div className="space-y-2.5">
+                  <div className="space-y-2.5 max-h-[300px] overflow-y-auto pr-1">
                     {members.map(m => (
                       <div key={m.id} className={`flex items-center justify-between p-3.5 rounded-xl border text-sm transition-colors ${editingId === m.id ? 'bg-amber-50 border-amber-300' : 'bg-[#FCFBF8] border-stone-200 hover:border-amber-200'}`}>
                         <div>
                           <div className="flex items-end gap-1.5 mb-1">
                             <span className="font-bold text-stone-800 text-base">{m.name}</span> 
                             <span className="text-stone-400 text-xs mb-0.5">({m.grade})</span>
+                            {m.excludedSlots && m.excludedSlots.length > 0 && (
+                              <button type="button" onClick={() => setExceptionModalMember(m)} className="ml-1 text-[10px] bg-rose-100 text-rose-600 hover:bg-rose-200 px-1.5 py-0.5 rounded-md font-bold border border-rose-200 transition-colors active:scale-95">
+                                예외 {m.excludedSlots.length}건 🔍
+                              </button>
+                            )}
                           </div>
                           <div className="text-xs text-amber-700 font-bold tracking-wide">
                             {m.type === 'FULL' ? '전참' : `${formatDateShort(m.startDate)} ${m.startTime} ~ ${formatDateShort(m.endDate)} ${m.endTime}`}
                           </div>
                         </div>
-                        <div className="flex gap-2">
-                          <button type="button" onClick={() => startEdit(m)} className={`p-1.5 rounded-lg transition-colors ${editingId === m.id ? 'text-amber-600' : 'text-stone-400 hover:text-amber-600 hover:bg-stone-200'}`}><PencilIcon /></button>
-                          <button type="button" onClick={() => removeMember(m.id)} className="p-1.5 rounded-lg text-stone-400 transition-colors hover:text-rose-500 hover:bg-rose-50"><TrashIcon /></button>
-                        </div>
+                        {!isRegisterMode && (
+                          <div className="flex gap-2">
+                            <button type="button" onClick={() => startEdit(m)} className="p-1.5 rounded-lg text-stone-400 hover:text-amber-600 hover:bg-stone-200"><PencilIcon /></button>
+                            <button type="button" onClick={() => removeMember(m.id)} className="p-1.5 rounded-lg text-stone-400 hover:text-rose-500 hover:bg-rose-50"><TrashIcon /></button>
+                          </div>
+                        )}
                       </div>
                     ))}
                   </div>
@@ -571,88 +817,149 @@
               )}
             </section>
 
-            <section className={`transition-opacity duration-300 space-y-3 ${dates.length === 0 ? 'opacity-50 pointer-events-none' : ''}`}>
-              <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 ml-1 mb-2">
-                <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700">
-                  <span className="text-amber-600"><CoffeeIcon /></span>
-                  3. 티테이블 일정표 생성
-                </h2>
-                <div className="flex items-center gap-3 w-full sm:w-auto">
-                  <span className="text-[15px] sm:text-sm text-stone-500 font-bold whitespace-nowrap">타임당 필요 인원:</span>
-                  <input type="number" min="1" max="10" value={personsPerShift} onChange={(e) => setPersonsPerShift(Number(e.target.value))} className="w-16 p-3 sm:p-2.5 bg-white border border-stone-300 rounded-xl text-center outline-none focus:ring-2 focus:ring-amber-500 text-[16px] font-bold text-stone-700" />
-                  <button onClick={generateSchedule} disabled={dates.length === 0 || members.length === 0} className="flex-1 sm:flex-none bg-amber-600 hover:bg-amber-700 disabled:bg-stone-300 disabled:text-stone-500 text-white px-5 py-3 sm:py-2.5 rounded-xl transition-colors font-bold text-[15px] sm:text-sm shadow-sm whitespace-nowrap active:scale-95">일정표 자동 배정</button>
+            {!isRegisterMode && (
+              <section className={`transition-opacity duration-300 space-y-3 ${dates.length === 0 ? 'opacity-50 pointer-events-none' : ''}`}>
+                <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 ml-1 mb-2">
+                  <h2 className="text-lg font-bold flex items-center gap-2 text-stone-700">
+                    <span className="text-amber-600"><CoffeeIcon /></span> 3. 티테이블 일정표 (배정)
+                  </h2>
+                  <div className="flex items-center gap-3 w-full sm:w-auto">
+                    <span className="text-[15px] sm:text-sm text-stone-500 font-bold whitespace-nowrap">타임당 인원:</span>
+                    <input type="number" min="1" max="10" value={personsPerShift} onChange={(e) => setPersonsPerShift(Number(e.target.value))} className="w-16 p-3 sm:p-2.5 bg-white border border-stone-300 rounded-xl text-center outline-none focus:ring-2 focus:ring-amber-500 text-[16px] font-bold text-stone-700" />
+                    <button onClick={generateSchedule} disabled={dates.length === 0 || members.length === 0} className="flex-1 sm:flex-none bg-amber-600 hover:bg-amber-700 disabled:bg-stone-300 disabled:text-stone-500 text-white px-5 py-3 sm:py-2.5 rounded-xl transition-colors font-bold text-[15px] sm:text-sm shadow-sm whitespace-nowrap active:scale-95">
+                      일정표 자동 배정
+                    </button>
+                  </div>
                 </div>
-              </div>
 
-              <div className="bg-white border border-stone-200 rounded-2xl shadow-sm overflow-hidden">
-                {schedule ? (
-                  <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
-                    <table ref={scheduleRef} className="w-full text-sm min-w-[600px] border-collapse bg-white">
-                      <thead>
-                        <tr>
-                          <th className="bg-[#F4ECE4] border-b border-r border-stone-200 p-4 text-center w-28 font-bold text-stone-700 whitespace-nowrap">시간 \ 날짜</th>
-                          {dates.map(date => (
-                            <th key={date} className="bg-[#F4ECE4] border-b border-stone-200 p-4 text-center font-bold text-stone-800 min-w-[140px]">{formatDateShort(date)}</th>
-                          ))}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {TIMES.map((time, tIdx) => {
-                          const isLastRow = tIdx === TIMES.length - 1;
-                          return (
-                            <tr key={time} className="hover:bg-amber-50/30 transition-colors">
-                              <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
-                              {dates.map(date => {
-                                const assigned = schedule[date][time];
-                                return (
-                                  <td key={`${date}-${time}`} className={`p-4 align-top ${!isLastRow ? 'border-b border-stone-200' : ''}`}>
-                                    {assigned.length > 0 ? (
-                                      <div className="flex flex-col items-center gap-2">
-                                        <div className="flex flex-wrap justify-center gap-2">
-                                          {assigned.map(m => (
-                                            <div key={m.id} className="bg-white border border-stone-200 rounded-lg flex flex-col items-center justify-center py-2 px-3 min-w-[3.8rem] shadow-[0_2px_4px_rgba(0,0,0,0.02)]">
-                                              <span className="text-[12px] font-bold text-stone-800">{m.name}</span>
-                                              <span className="text-[10px] text-stone-400 mt-0.5">{m.grade}</span>
-                                            </div>
-                                          ))}
-                                        </div>
-                                        {assigned.length < personsPerShift && <span className="text-[11px] font-bold text-rose-500 mt-1">(인원 부족)</span>}
-                                      </div>
-                                    ) : (
-                                      <div className="text-center text-stone-300 text-xs font-semibold py-3">빈 슬롯</div>
-                                    )}
-                                    <button onClick={() => setManualEditSlot({date, time})} data-html2canvas-ignore="true" className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 bg-[#FAF7F2] hover:bg-amber-100 text-stone-400 hover:text-amber-700 rounded-lg text-[11px] font-bold transition-colors active:scale-95">
-                                      <PencilIcon /> 수정
-                                    </button>
-                                  </td>
-                                );
-                              })}
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                ) : (
-                  <div className="text-center py-16 bg-[#FCFBF8]">
-                    <CalendarIcon className="mx-auto h-12 w-12 text-stone-300 mb-4" />
-                    <p className="text-stone-500 text-sm font-medium">일정을 설정하고 멤버를 추가한 뒤<br/>우측 상단의 배정 버튼을 눌러주세요.</p>
-                  </div>
-                )}
-                
+                {/* 통계 및 검색 하이라이트 패널 */}
                 {schedule && (
-                  <div className="bg-[#FCF9F5] p-4 border-t border-stone-200 flex flex-wrap justify-end gap-2">
-                    <button onClick={handleDownloadImage} className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-bold rounded-xl transition-colors shadow-sm active:scale-95">
-                      <DownloadIcon /> 이미지로 저장
-                    </button>
-                    <button onClick={handleCopyAsText} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-700 text-sm font-bold rounded-xl transition-colors shadow-sm active:scale-95">
-                      <CopyIcon /> 텍스트로 복사
-                    </button>
+                  <div className="bg-white border border-stone-200 rounded-2xl shadow-sm p-4 mb-3">
+                    <div className="flex items-center gap-2 mb-3">
+                      <BarChartIcon className="text-amber-600" />
+                      <h3 className="text-[13px] font-bold text-stone-700">
+                        근무 횟수 확인 <span className="text-[11px] text-stone-400 font-normal ml-1">(멤버를 0.3초 꾹 눌러 이동 가능)</span>
+                      </h3>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {members.map(m => {
+                        const count = memberStats[m.id] || 0;
+                        const isHighlighted = highlightId === m.id;
+                        return (
+                          <button 
+                            key={m.id} onClick={() => setHighlightId(isHighlighted ? null : m.id)}
+                            className={`px-3 py-1.5 text-[12px] font-bold rounded-full border transition-all ${isHighlighted ? 'bg-amber-500 text-white border-amber-600 shadow-md transform scale-105' : 'bg-stone-50 text-stone-600 border-stone-200 hover:bg-amber-50 hover:border-amber-300'}`}
+                          >
+                            {m.name} <span className={`ml-1 px-1.5 py-0.5 rounded-md ${isHighlighted ? 'bg-amber-600' : 'bg-stone-200 text-stone-500'}`}>{count}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 )}
-              </div>
-            </section>
 
+                <div className="bg-white border border-stone-200 rounded-2xl shadow-sm overflow-hidden relative">
+                  {/* Drag Info Overlay */}
+                  {draggedInfo && (
+                    <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-amber-800 text-white text-xs px-4 py-2 rounded-full shadow-lg z-10 font-bold opacity-90 animate-pulse pointer-events-none">
+                      변경할 시간의 빈 공간에 끌어다 놓으세요
+                    </div>
+                  )}
+
+                  {schedule ? (
+                    <div className="overflow-x-auto" style={{ WebkitOverflowScrolling: 'touch' }}>
+                      <table ref={scheduleRef} className="w-full text-sm min-w-[700px] border-collapse bg-white">
+                        <thead>
+                          <tr>
+                            <th className="bg-[#F4ECE4] border-b border-r border-stone-200 p-4 text-center w-28 font-bold text-stone-700 whitespace-nowrap">시간 \ 날짜</th>
+                            {dates.map(date => (
+                              <th key={date} className="bg-[#F4ECE4] border-b border-stone-200 p-4 text-center font-bold text-stone-800 min-w-[150px]">{formatDateShort(date)}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {TIMES.map((time, tIdx) => {
+                            const isLastRow = tIdx === TIMES.length - 1;
+                            return (
+                              <tr key={time} className="hover:bg-amber-50/20 transition-colors">
+                                <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
+                                
+                                {dates.map(date => {
+                                  const assigned = schedule[date][time];
+                                  const slotId = `${date}-${time}`;
+                                  const isDragOver = dragOverSlot === slotId;
+                                  
+                                  return (
+                                    <td 
+                                      key={slotId} 
+                                      onDragOver={(e) => handleDragOver(e, date, time)}
+                                      onDragLeave={handleDragLeave}
+                                      onDrop={(e) => handleDrop(e, date, time)}
+                                      className={`p-3 align-top transition-colors ${!isLastRow ? 'border-b border-stone-200' : ''} ${isDragOver ? 'drag-over' : ''}`}
+                                    >
+                                      <div className="min-h-[80px] flex flex-col items-center gap-2 w-full h-full">
+                                        <div className="flex flex-wrap justify-center gap-2 w-full">
+                                          {assigned.map(m => {
+                                            const isHighlighted = highlightId === m.id;
+                                            return (
+                                              <div 
+                                                key={m.id} 
+                                                draggable={true}
+                                                onDragStart={(e) => handleDragStart(e, date, time, m)}
+                                                onDragEnd={handleDragEnd}
+                                                className={`draggable-item relative flex flex-col items-center justify-center py-2 px-3 min-w-[4rem] shadow-sm transition-all select-none cursor-grab active:cursor-grabbing hover:shadow-md
+                                                  ${isHighlighted ? 'bg-amber-100 border-2 border-amber-500 ring-2 ring-amber-300 ring-opacity-50 transform scale-110 z-10' : 'bg-white border border-stone-200 rounded-lg'}
+                                                  ${isHighlighted ? 'rounded-xl' : 'rounded-lg'}
+                                                `}
+                                                style={{ WebkitTouchCallout: 'none', WebkitUserSelect: 'none', userSelect: 'none' }}
+                                              >
+                                                <span className={`text-[13px] font-bold ${isHighlighted ? 'text-amber-900' : 'text-stone-800'}`}>{m.name}</span>
+                                                <span className={`text-[10px] mt-0.5 ${isHighlighted ? 'text-amber-700' : 'text-stone-400'}`}>{m.grade}</span>
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                        
+                                        {assigned.length < personsPerShift && <span className="text-[11px] font-bold text-rose-400 mt-auto">(필요: {personsPerShift}명)</span>}
+                                        {assigned.length === 0 && <span className="text-center text-stone-300 text-xs font-semibold mt-auto mb-auto">비어있음</span>}
+                                      </div>
+                                      
+                                      <button 
+                                        onClick={() => setManualEditSlot({date, time})} 
+                                        data-html2canvas-ignore="true" 
+                                        className="mt-3 w-full flex items-center justify-center gap-1.5 py-1.5 bg-[#FAF7F2] hover:bg-amber-100 text-stone-400 hover:text-amber-700 rounded-lg text-[11px] font-bold transition-colors active:scale-95"
+                                      >
+                                        <PencilIcon /> 수동 배정
+                                      </button>
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  ) : (
+                    <div className="text-center py-16 bg-[#FCFBF8]">
+                      <CalendarIcon className="mx-auto h-12 w-12 text-stone-300 mb-4" />
+                      <p className="text-stone-500 text-sm font-medium">일정을 설정하고 멤버를 추가한 뒤<br/>우측 상단의 배정 버튼을 눌러주세요.</p>
+                    </div>
+                  )}
+                  
+                  {schedule && (
+                    <div className="bg-[#FCF9F5] p-4 border-t border-stone-200 flex flex-wrap justify-end gap-2" data-html2canvas-ignore="true">
+                      <button onClick={handleDownloadImage} className="flex items-center gap-2 px-4 py-2.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-bold rounded-xl transition-colors shadow-sm active:scale-95">
+                        <DownloadIcon /> 이미지로 저장
+                      </button>
+                      <button onClick={handleCopyAsText} className="flex items-center gap-2 px-4 py-2.5 bg-white border border-stone-300 hover:bg-stone-50 text-stone-700 text-sm font-bold rounded-xl transition-colors shadow-sm active:scale-95">
+                        <CopyIcon /> 텍스트로 복사
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </section>
+            )}
           </div>
 
           {/* MODAL: 수동 배정 편집 */}
@@ -661,15 +968,15 @@
               <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-stone-100 my-auto">
                 <div className="flex justify-between items-start mb-4">
                   <div>
-                    <h3 className="text-base font-bold text-stone-800">근무 멤버 직접 수정</h3>
+                    <h3 className="text-base font-bold text-stone-800">근무 멤버 수동 배정</h3>
                     <p className="text-[12px] text-stone-500 mt-0.5">{formatDateShort(manualEditSlot.date)} - {manualEditSlot.time}</p>
                   </div>
-                  <button onClick={() => setManualEditSlot(null)} className="text-stone-400 p-1.5 active:scale-90 bg-stone-100 rounded-full hover:bg-stone-200 transition-colors"><XIcon /></button>
+                  <button onClick={() => setManualEditSlot(null)} className="text-stone-400 p-1.5 active:scale-90 bg-stone-100 rounded-full hover:bg-stone-200"><XIcon /></button>
                 </div>
-
                 <div className="space-y-3">
-                  <p className="text-[11px] text-stone-500">배정할 멤버를 터치하세요.</p>
-                  
+                  <p className="text-[11px] text-stone-500 text-center bg-stone-50 p-2 rounded-lg mb-2">
+                    배정된 멤버를 <strong>0.3초간 꾹 누르면</strong> 모바일에서도 드래그 이동이 가능합니다.
+                  </p>
                   <div className="grid grid-cols-2 gap-2 max-h-[50vh] overflow-y-auto p-1" style={{ WebkitOverflowScrolling: 'touch' }}>
                     {members.map(member => {
                       const isAvail = isAvailable(member, manualEditSlot.date, manualEditSlot.time);
@@ -691,8 +998,7 @@
                       );
                     })}
                   </div>
-
-                  <button onClick={() => setManualEditSlot(null)} className="w-full mt-2 bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 rounded-xl text-sm transition-colors active:scale-95 shadow-sm">수정 완료</button>
+                  <button onClick={() => setManualEditSlot(null)} className="w-full mt-2 bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 rounded-xl text-sm transition-colors active:scale-95 shadow-sm">완료</button>
                 </div>
               </div>
             </div>
@@ -702,15 +1008,37 @@
           {showConfirmClear && (
             <div className="fixed inset-0 z-[70] overflow-y-auto bg-black/40 flex items-center justify-center p-4 backdrop-blur-sm">
               <div className="bg-white rounded-2xl max-w-sm w-full p-6 shadow-2xl border border-stone-100 my-auto text-center">
-                <div className="mx-auto w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mb-4">
-                  <TrashIcon />
-                </div>
+                <div className="mx-auto w-12 h-12 bg-rose-100 text-rose-600 rounded-full flex items-center justify-center mb-4"><TrashIcon /></div>
                 <h3 className="text-lg font-bold text-stone-800 mb-2">전체 데이터 초기화</h3>
                 <p className="text-sm text-stone-500 mb-6">정말로 모든 데이터를 초기화하시겠습니까?<br/>(삭제된 데이터는 복구할 수 없습니다)</p>
                 <div className="flex gap-3">
                   <button onClick={() => setShowConfirmClear(false)} className="flex-1 bg-stone-100 hover:bg-stone-200 text-stone-700 font-bold py-3 rounded-xl text-sm transition-colors active:scale-95">취소</button>
                   <button onClick={executeClearAllMembers} className="flex-1 bg-rose-600 hover:bg-rose-700 text-white font-bold py-3 rounded-xl text-sm transition-colors active:scale-95 shadow-sm">초기화 진행</button>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* MODAL: 예외 세부 사항 확인 */}
+          {exceptionModalMember && (
+            <div className="fixed inset-0 z-[80] overflow-y-auto bg-black/40 flex items-center justify-center p-4 backdrop-blur-sm">
+              <div className="bg-white rounded-2xl max-w-sm w-full p-5 shadow-2xl border border-stone-100 my-auto">
+                <div className="flex justify-between items-start mb-4">
+                  <div>
+                    <h3 className="text-base font-bold text-stone-800">{exceptionModalMember.name}님의 예외 시간</h3>
+                    <p className="text-[12px] text-stone-500 mt-0.5">아래 시간에는 배정되지 않습니다.</p>
+                  </div>
+                  <button onClick={() => setExceptionModalMember(null)} className="text-stone-400 p-1.5 active:scale-90 bg-stone-100 rounded-full hover:bg-stone-200"><XIcon /></button>
+                </div>
+                <div className="space-y-2 max-h-[40vh] overflow-y-auto p-1 text-sm text-stone-700">
+                  {exceptionModalMember.excludedSlots.map((slot, idx) => (
+                    <div key={idx} className="flex justify-between items-center bg-rose-50 border border-rose-100 p-3 rounded-xl">
+                      <span className="font-bold text-stone-700">{formatDateShort(slot.date)}</span>
+                      <span className="text-rose-600 font-bold">{slot.time}</span>
+                    </div>
+                  ))}
+                </div>
+                <button onClick={() => setExceptionModalMember(null)} className="w-full mt-4 bg-stone-200 hover:bg-stone-300 text-stone-800 font-bold py-3 rounded-xl text-sm transition-colors active:scale-95 shadow-sm">닫기</button>
               </div>
             </div>
           )}
