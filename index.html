@@ -223,6 +223,7 @@
 
       // --- 무한 동기화 충돌 방지용 Ref ---
       const cloudDataStringRef = useRef(null);
+      const isRemoteUpdateRef = useRef(false);
 
       const dates = useMemo(() => {
         if (!startDate || !endDate || new Date(startDate) > new Date(endDate)) return [];
@@ -260,8 +261,6 @@
         if (!auth) return;
         const initAuth = async () => {
           try {
-            // 현재 환경이 캔버스 환경일 때만 커스텀 토큰을 사용합니다.
-            // 깃허브 배포 시에는 익명 로그인(signInAnonymously)을 자동으로 호출합니다.
             if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
               await signInWithCustomToken(auth, __initial_auth_token);
             } else {
@@ -287,14 +286,19 @@
             if (docSnap.exists()) {
               const data = docSnap.data();
               
-              // [버그 해결] 클라우드에서 받은 데이터를 문자열로 기억해둡니다.
-              cloudDataStringRef.current = JSON.stringify({
+              const newDataString = JSON.stringify({
                 startDate: data.startDate,
                 endDate: data.endDate,
                 members: data.members,
                 schedule: data.schedule,
                 personsPerShift: data.personsPerShift
               });
+
+              // 내가 방금 올린 데이터가 다시 내려온 것이거나 변경점이 없으면 무시
+              if (cloudDataStringRef.current === newDataString) return;
+
+              cloudDataStringRef.current = newDataString;
+              isRemoteUpdateRef.current = true; // 외부에서 온 업데이트임을 표시
 
               setStartDate(data.startDate || DEMO_START_DATE);
               setEndDate(data.endDate || DEMO_END_DATE);
@@ -309,7 +313,6 @@
             console.error("Cloud load error (Check Firebase Rules):", err);
             setUsingCloud(false);
             setCloudError(true);
-            // 클라우드 에러 시 로컬 데이터 로드
             loadLocalState().then(data => {
               if (data) {
                 setStartDate(data.startDate || DEMO_START_DATE);
@@ -341,7 +344,6 @@
       useEffect(() => {
         if (!isDataLoaded) return;
         
-        // [버그 해결] 현재 로컬 화면의 상태를 문자열로 변환합니다.
         const currentLocalDataString = JSON.stringify({
           startDate: startDate, 
           endDate: endDate,
@@ -350,8 +352,13 @@
           personsPerShift: personsPerShift
         });
 
-        // [버그 해결] 클라우드에서 방금 받은 데이터와 현재 화면의 데이터가 완전히 똑같다면,
-        // 내가 수정한 것이 아니므로 덮어쓰기 저장을 건너뜁니다. (무한 루프 방지)
+        // 클라우드에서 받은 데이터로 인해 상태가 변경된 직후의 useEffect 실행이라면 무시
+        if (isRemoteUpdateRef.current) {
+          isRemoteUpdateRef.current = false;
+          return;
+        }
+
+        // 로컬 데이터와 클라우드 데이터가 이미 동일하면 덮어쓰지 않음
         if (usingCloud && cloudDataStringRef.current === currentLocalDataString) {
           return;
         }
@@ -360,6 +367,7 @@
           if (db && user && usingCloud) {
             try {
               const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'teaTableApp', 'sharedState');
+              cloudDataStringRef.current = currentLocalDataString; // 저장 전 미리 업데이트하여 메아리 무시
               await setDoc(docRef, {
                 startDate, endDate,
                 members: JSON.stringify(members),
@@ -367,13 +375,10 @@
                 personsPerShift,
                 lastUpdated: new Date().toISOString()
               });
-              // 저장 성공 시, 방금 저장한 내역을 '클라우드 데이터'로 갱신하여 락을 풉니다.
-              cloudDataStringRef.current = currentLocalDataString;
             } catch (err) {
               console.error("Cloud save error:", err);
             }
           } 
-          // 클라우드 여부와 상관없이 항상 로컬 백업
           await saveLocalState({ startDate, endDate, members, schedule, personsPerShift });
           
         }, 1000);
@@ -387,16 +392,9 @@
 
       // --- 초대 링크 복사 ---
       const handleCopyInviteLink = () => {
-        // 현재 브라우저의 정확한 주소를 가져오도록 수정 (기존 파라미터 제외)
         let baseUrl = window.location.href.split('?')[0];
-        
-        // 깃허브 호스팅 시 경로 끝에 /가 없어서 파라미터가 유실되는 이슈 방지
-        if (!baseUrl.endsWith('/') && !baseUrl.endsWith('.html')) {
-          baseUrl += '/';
-        }
-        
+        if (!baseUrl.endsWith('/') && !baseUrl.endsWith('.html')) baseUrl += '/';
         const url = baseUrl + '?mode=register';
-        
         const textarea = document.createElement("textarea");
         textarea.value = url;
         document.body.appendChild(textarea);
@@ -650,18 +648,18 @@
           <div className="max-w-5xl mx-auto space-y-6 sm:space-y-8 relative">
             
             <header className="text-center pt-2 sm:pt-4 relative">
-              <div className="flex flex-col items-end gap-2 mb-4 sm:absolute sm:top-0 sm:right-0 sm:mb-0">
+              <div className="flex flex-row flex-wrap justify-center items-center gap-2 mb-4 sm:absolute sm:top-0 sm:right-0 sm:flex-col sm:items-end sm:mb-0 sm:mt-0">
                 {!isRegisterMode && (
                   <button onClick={handleCopyInviteLink} className="bg-amber-100 text-amber-700 text-[11px] font-bold px-3 py-1.5 rounded-lg flex items-center gap-1 shadow-sm hover:bg-amber-200 transition-colors active:scale-95">
                     🔗 참가자 초대 링크 복사
                   </button>
                 )}
                 {usingCloud ? (
-                  <div className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 shadow-sm">
+                  <div className="bg-emerald-100 text-emerald-700 text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-sm">
                     <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span> 실시간 공유됨
                   </div>
                 ) : (
-                  <div className={`text-[10px] font-bold px-2 py-1 rounded-md flex items-center gap-1 shadow-sm ${cloudError ? 'bg-rose-100 text-rose-600' : 'bg-stone-200 text-stone-500'}`}>
+                  <div className={`text-[10px] font-bold px-2.5 py-1.5 rounded-lg flex items-center gap-1 shadow-sm ${cloudError ? 'bg-rose-100 text-rose-600' : 'bg-stone-200 text-stone-500'}`}>
                     <span className={`w-1.5 h-1.5 rounded-full ${cloudError ? 'bg-rose-500' : 'bg-stone-400'}`}></span> 
                     {cloudError ? 'DB 연결 실패 (로컬 모드)' : '개인 로컬 모드'}
                   </div>
