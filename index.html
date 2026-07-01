@@ -27,7 +27,7 @@
         holdToDrag: 300 // 0.3초 꾹 누르면 드래그 시작 (가로 스크롤 방해 방지)
       });
       // 모바일 화면에서 드래그 중일 때 스크롤되는 현상 방지
-      window.addEventListener('touchmove', function() {}, {passive: false});
+      window.addEventListener('touchmove', function(e) {}, {passive: false});
     });
   </script>
 
@@ -39,15 +39,32 @@
     ::-webkit-scrollbar-thumb { background: #E7E5E4; border-radius: 10px; }
     ::-webkit-scrollbar-thumb:hover { background: #D6D3D1; }
     
-    /* 드래그 앤 드롭 효과 */
-    .drag-over { background-color: #FEF3C7 !important; border: 2px dashed #F59E0B !important; }
+    /* 드래그 앤 드롭 효과 (DOM 직접 제어 및 레이아웃 밀림 방지) */
+    .drag-over-active { background-color: #FEF3C7 !important; outline: 2px dashed #F59E0B !important; outline-offset: -2px; }
+    .drag-invalid-active { background-color: #FFE4E6 !important; outline: 2px dashed #F43F5E !important; outline-offset: -2px; }
+
+    /* 드래그 중 자식 요소가 이벤트를 가로채지 못하게 방지 */
+    body.is-dragging .drop-zone-cell * {
+      pointer-events: none !important;
+    }
+    
+    /* [버그 해결] 단, 현재 드래그 중인 원본 요소는 모바일 터치 이벤트를 계속 받아야 하므로 예외 처리 */
+    body.is-dragging .is-active-drag,
+    body.is-dragging .is-active-drag * {
+      pointer-events: auto !important;
+    }
+
+    /* 드래그 안내 오버레이 CSS 제어 (React 리렌더링 방지용) */
+    .drag-overlay { opacity: 0; visibility: hidden; transition: all 0.2s ease-in-out; }
+    @keyframes customPulse { 0%, 100% { opacity: 0.95; } 50% { opacity: 0.5; } }
+    body.is-dragging .drag-overlay { visibility: visible; animation: customPulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
 
     /* 모바일 드래그 시 텍스트 선택 및 iOS 메뉴 팝업 방지 */
     .draggable-item {
       -webkit-touch-callout: none;
       -webkit-user-select: none;
       user-select: none;
-      touch-action: none; /* 핵심: 모바일에서 미세한 터치 움직임으로 인한 드래그 취소 방지 */
+      touch-action: none; 
     }
   </style>
 </head>
@@ -217,14 +234,13 @@
       const [showConfirmClear, setShowConfirmClear] = useState(false);
       const [exceptionModalMember, setExceptionModalMember] = useState(null);
       
-      // --- 하이라이트 및 드래그 상태 ---
+      // --- 하이라이트 ---
       const [highlightId, setHighlightId] = useState(null);
-      const [draggedInfo, setDraggedInfo] = useState(null);
-      const [dragOverSlot, setDragOverSlot] = useState(null);
 
-      // --- 무한 동기화 충돌 방지용 Ref ---
+      // --- 무한 동기화 충돌 방지 및 고성능 드래그용 Ref (React State 리렌더링 제거) ---
       const cloudDataStringRef = useRef(null);
       const isRemoteUpdateRef = useRef(false);
+      const draggedInfoRef = useRef(null); 
 
       const dates = useMemo(() => {
         if (!startDate || !endDate || new Date(startDate) > new Date(endDate)) return [];
@@ -476,7 +492,9 @@
           setPartEndDate(member.endDate || dates[dates.length - 1] || '');
           setPartEndTime(member.endTime || '점심');
         }
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+        setTimeout(() => {
+          document.getElementById('member-form')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        }, 50);
       };
 
       const removeMember = (id) => {
@@ -507,14 +525,24 @@
         members.forEach(m => tempShiftCount[m.id] = 0);
         let lastAssignedIds = []; 
 
+        const validSlots = [];
+        dates.forEach(date => {
+          TIMES.forEach(time => {
+            if (!globalExcludedSlots.some(s => s.date === date && s.time === time)) {
+              validSlots.push({ date, time });
+            }
+          });
+        });
+
+        members.forEach(m => {
+          m._totalAvailable = validSlots.filter(slot => isAvailable(m, slot.date, slot.time)).length;
+        });
+
         dates.forEach(date => {
           newSchedule[date] = { '아침': [], '점심': [], '저녁': [] };
           TIMES.forEach(time => {
-            // [추가됨] 전체 운영 제외 시간인 경우 배정 생략
             const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
-            if (isGloballyExcluded) {
-              return; // 이 타임은 아무도 배정하지 않음
-            }
+            if (isGloballyExcluded) return; 
 
             let availableMembers = members.filter(m => isAvailable(m, date, time));
             let selectedForThisSlot = [];
@@ -525,6 +553,8 @@
               availableMembers.forEach(c => {
                 let score = 0;
                 score -= tempShiftCount[c.id] * 10000; 
+                const ratio = c._totalAvailable > 0 ? (tempShiftCount[c.id] / c._totalAvailable) : 1;
+                score -= ratio * 15000;
                 if (lastAssignedIds.includes(c.id)) score -= 50000; 
                 const sameGradeCount = selectedForThisSlot.filter(s => s.grade === c.grade).length;
                 score -= sameGradeCount * 2000;
@@ -534,7 +564,6 @@
 
               availableMembers.sort((a, b) => b._tempScore - a._tempScore);
               const bestCandidate = availableMembers.shift(); 
-              
               selectedForThisSlot.push(bestCandidate);
               tempShiftCount[bestCandidate.id]++;
             }
@@ -546,7 +575,7 @@
 
         setSchedule(newSchedule);
         setHighlightId(null);
-        showToast('스마트 배정이 완료되었습니다! ☕️');
+        showToast('공평한 비율을 적용한 스마트 배정이 완료되었습니다! ☕️');
       };
 
       const toggleManualAssign = (date, time, memberId) => {
@@ -563,41 +592,99 @@
         });
       };
 
-      // --- Drag and Drop Handlers ---
+      // --- Drag and Drop Handlers (고성능 DOM 직접 제어 방식 - 리렌더링 완벽 제거) ---
       const handleDragStart = (e, date, time, member) => {
-        setDraggedInfo({ date, time, member });
+        // e.dataTransfer 객체에 직렬화된 데이터를 확실히 심어줌 (iOS 브라우저 필수)
+        const payload = JSON.stringify({ srcDate: date, srcTime: time, member });
         e.dataTransfer.effectAllowed = "move";
-        e.dataTransfer.setData('text/plain', member.id);
+        e.dataTransfer.setData('text/plain', payload);
+        
+        draggedInfoRef.current = { date, time, member };
+        
+        // [중요] 드래그 시작 시 해당 명찰에만 pointer-events가 유지되도록 클래스 추가 (모바일 터치 튕김 방지)
+        if (e.target) {
+          e.target.classList.add('is-active-drag');
+        }
+        
+        document.body.classList.add('is-dragging'); // CSS로 오버레이 표시 및 자식 이벤트 차단
+
         setTimeout(() => { if(e.target) e.target.style.opacity = '0.5'; }, 0);
       };
 
       const handleDragEnd = (e) => {
-        if(e.target) e.target.style.opacity = '1';
-        setDraggedInfo(null);
-        setDragOverSlot(null);
+        if(e.target) {
+          e.target.style.opacity = '1';
+          e.target.classList.remove('is-active-drag');
+        }
+        document.body.classList.remove('is-dragging');
+        
+        // 남아있는 박스 효과 확실히 청소
+        document.querySelectorAll('.drag-over-active, .drag-invalid-active').forEach(el => {
+          el.classList.remove('drag-over-active', 'drag-invalid-active');
+        });
+
+        // Drop 이벤트가 먼저 실행될 수 있도록 ref 클리어 시점을 미세하게 늦춤
+        setTimeout(() => {
+          draggedInfoRef.current = null;
+        }, 50);
+      };
+
+      const handleDragEnter = (e, date, time) => {
+        e.preventDefault(); // iOS에서 드롭 가능 영역으로 인식시키기 위해 필수
+        
+        const currentDrag = draggedInfoRef.current;
+        let isValid = true;
+        
+        if (currentDrag) {
+          const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+          isValid = !isGloballyExcluded && isAvailable(currentDrag.member, date, time);
+        }
+        
+        // React 상태 업데이트 대신 순수 DOM 클래스 제어로 퍼포먼스 극대화
+        if (isValid) {
+          e.currentTarget.classList.add('drag-over-active');
+          e.currentTarget.classList.remove('drag-invalid-active');
+        } else {
+          e.currentTarget.classList.add('drag-invalid-active');
+          e.currentTarget.classList.remove('drag-over-active');
+        }
       };
 
       const handleDragOver = (e, date, time) => {
-        e.preventDefault();
-        e.dataTransfer.dropEffect = "move";
-        if (dragOverSlot !== `${date}-${time}`) setDragOverSlot(`${date}-${time}`);
+        e.preventDefault(); // 필수
+        const currentDrag = draggedInfoRef.current;
+        let isValid = true;
+        if (currentDrag) {
+          const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+          isValid = !isGloballyExcluded && isAvailable(currentDrag.member, date, time);
+        }
+        e.dataTransfer.dropEffect = isValid ? "move" : "none";
       };
 
-      const handleDragLeave = () => {
-        setDragOverSlot(null);
+      const handleDragLeave = (e) => {
+        e.currentTarget.classList.remove('drag-over-active', 'drag-invalid-active');
       };
 
       const handleDrop = (e, targetDate, targetTime) => {
         e.preventDefault();
-        setDragOverSlot(null);
-        if (!draggedInfo) return;
+        e.currentTarget.classList.remove('drag-over-active', 'drag-invalid-active');
+        document.body.classList.remove('is-dragging');
         
-        const { date: srcDate, time: srcTime, member } = draggedInfo;
-        setDraggedInfo(null); // 버그 방지 초기화
+        let info = null;
+        try {
+          const payload = e.dataTransfer.getData('text/plain');
+          if (payload) info = JSON.parse(payload);
+        } catch(err) {}
+        
+        // 브라우저가 dataTransfer를 비웠을 경우 백업된 Ref 사용
+        if (!info) info = draggedInfoRef.current;
+        
+        if (!info) return;
+        
+        const { srcDate, srcTime, member } = info;
         
         if (srcDate === targetDate && srcTime === targetTime) return;
 
-        // [추가됨] 전체 운영 제외 시간이면 드롭 불가
         const isGloballyExcluded = globalExcludedSlots.some(s => s.date === targetDate && s.time === targetTime);
         if (isGloballyExcluded) {
           showToast('해당 시간은 티테이블을 운영하지 않습니다.', 'error');
@@ -693,8 +780,13 @@
       return (
         <div className="min-h-screen bg-[#FDF8F5] p-3 sm:p-4 md:p-8 font-sans text-stone-800" style={{ paddingBottom: 'calc(6rem + env(safe-area-inset-bottom))' }}>
           
+          {/* 드래그 상태일 때만 보이는 CSS 애니메이션 안내창 */}
+          <div className="fixed top-14 sm:top-6 left-1/2 transform -translate-x-1/2 bg-amber-800 text-white text-[11px] sm:text-[13px] px-4 py-2.5 rounded-full shadow-lg z-10 font-bold pointer-events-none drag-overlay text-center whitespace-nowrap">
+            변경할 시간의 빈 칸에 명찰을 놓으세요
+          </div>
+
           {toast && (
-            <div className={`fixed top-4 left-1/2 transform -translate-x-1/2 z-[100] px-6 py-3 rounded-full shadow-md text-sm font-semibold text-white transition-opacity duration-300 ${toast.type === 'error' ? 'bg-rose-500' : 'bg-amber-600'}`}>
+            <div className={`fixed top-12 sm:top-4 left-1/2 transform -translate-x-1/2 z-[100] px-6 py-3 rounded-full shadow-md text-sm font-semibold text-white transition-opacity duration-300 ${toast.type === 'error' ? 'bg-rose-500' : 'bg-amber-600'}`}>
               {toast.msg}
             </div>
           )}
@@ -798,7 +890,7 @@
                 <span className="text-amber-600"><UsersIcon /></span> {isRegisterMode ? '내 정보 등록' : '2. 멤버 등록 및 관리'}
               </h2>
               
-              <form onSubmit={handleSubmit} className="p-4 sm:p-5 bg-white border border-stone-200 rounded-2xl shadow-sm space-y-4 sm:space-y-5">
+              <form id="member-form" onSubmit={handleSubmit} className="p-4 sm:p-5 bg-white border border-stone-200 rounded-2xl shadow-sm space-y-4 sm:space-y-5">
                 {/* 기본 정보 */}
                 <div className="flex flex-col sm:flex-row gap-3">
                   <input type="text" placeholder="이름" value={name} onChange={e => setName(e.target.value)} className="flex-1 p-2.5 bg-[#FAF7F2] border border-stone-200 rounded-xl outline-none focus:ring-2 focus:ring-amber-500 text-[15px] sm:text-[16px]" />
@@ -993,13 +1085,6 @@
                 )}
 
                 <div className="bg-white border border-stone-200 rounded-2xl shadow-sm overflow-hidden relative">
-                  {/* Drag Info Overlay */}
-                  {draggedInfo && (
-                    <div className="absolute top-2 left-1/2 transform -translate-x-1/2 bg-amber-800 text-white text-[10px] sm:text-xs px-3 sm:px-4 py-1.5 sm:py-2 rounded-full shadow-lg z-10 font-bold opacity-90 animate-pulse pointer-events-none whitespace-nowrap">
-                      변경할 시간의 빈 공간에 끌어다 놓으세요
-                    </div>
-                  )}
-
                   {schedule ? (
                     <div className="overflow-x-auto bg-stone-50/50" style={{ WebkitOverflowScrolling: 'touch' }}>
                       {/* 이미지 캡처의 기준이 되는 최상위 컨테이너 (넉넉한 패딩 유지) */}
@@ -1027,26 +1112,25 @@
                               const isLastRow = tIdx === TIMES.length - 1;
                               return (
                                 <tr key={time} className="hover:bg-amber-50/20 transition-colors">
-                                  <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
+                                <td className={`bg-[#FCF9F5] border-r border-stone-200 p-4 text-center font-bold text-amber-800 align-middle ${!isLastRow ? 'border-b' : ''}`}>{time}</td>
+                                
+                                {dates.map(date => {
+                                  const assigned = schedule[date][time];
+                                  const slotId = `${date}-${time}`;
                                   
-                                  {dates.map(date => {
-                                    const assigned = schedule[date][time];
-                                    const slotId = `${date}-${time}`;
-                                    const isDragOver = dragOverSlot === slotId;
-                                    
-                                    // [추가됨] 해당 타임이 전체 운영 제외인지 확인
-                                    const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
-                                    
-                                    return (
-                                      <td 
-                                        key={slotId} 
-                                        onDragOver={(e) => handleDragOver(e, date, time)}
-                                        onDragLeave={handleDragLeave}
-                                        onDrop={(e) => handleDrop(e, date, time)}
-                                        className={`p-3 align-top transition-colors ${!isLastRow ? 'border-b border-stone-200' : ''} ${isDragOver ? 'drag-over' : ''} ${isGloballyExcluded ? 'bg-stone-50' : ''}`}
-                                      >
-                                        {isGloballyExcluded ? (
-                                          <div className="min-h-[80px] flex items-center justify-center w-full h-full">
+                                  const isGloballyExcluded = globalExcludedSlots.some(s => s.date === date && s.time === time);
+                                  
+                                  return (
+                                    <td 
+                                      key={slotId} 
+                                      onDragEnter={(e) => handleDragEnter(e, date, time)}
+                                      onDragOver={(e) => handleDragOver(e, date, time)}
+                                      onDragLeave={handleDragLeave}
+                                      onDrop={(e) => handleDrop(e, date, time)}
+                                      className={`drop-zone-cell p-3 align-top transition-colors ${!isLastRow ? 'border-b border-stone-200' : ''} ${isGloballyExcluded ? 'bg-stone-50' : ''}`}
+                                    >
+                                      {isGloballyExcluded ? (
+                                        <div className="min-h-[80px] flex items-center justify-center w-full h-full">
                                             <span className="text-stone-400 text-[11px] sm:text-xs font-bold bg-stone-200 px-3 py-1.5 rounded-lg border border-stone-300">운영 안 함</span>
                                           </div>
                                         ) : (
